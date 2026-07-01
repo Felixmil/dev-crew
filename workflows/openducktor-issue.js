@@ -1,6 +1,6 @@
 // Copy this file into a target repo's .claude/workflows/ directory
 // (plugins cannot distribute Workflow scripts today; only agents/
-// are plugin-discoverable). Requires scripts/odt-transition.sh to
+// are plugin-discoverable). Requires .claude/scripts/odt-transition.sh to
 // also be copied into that repo's scripts/ directory, and the four
 // agents from this plugin to be installed.
 //
@@ -131,7 +131,7 @@ const PHASE_DEFS = [
 ];
 
 async function transitionTo(issue, to) {
-  await agent(`Run: bash scripts/odt-transition.sh ${issue} ${to}`, { label: "transition" });
+  await agent(`Run: bash .claude/scripts/odt-transition.sh ${issue} ${to}`, { label: "transition" });
 }
 
 // A freshly filed issue has no status:* label yet. Treat that as

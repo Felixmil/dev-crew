@@ -12,7 +12,7 @@ agents/                  four Claude Code subagent definitions (plugin-installab
   qa-agent.md
 workflows/
   openducktor-issue.js   drives one issue through spec -> plan -> build -> qa
-scripts/
+.claude/scripts/
   odt-transition.sh      the only thing allowed to write an issue's status:* label
 ```
 
@@ -34,9 +34,10 @@ After that, `spec-agent`, `planner-agent`, `build-agent`, and `qa-agent` are ava
 Copy both files into the repo you want to run this against:
 
 ```
-cp workflows/openducktor-issue.js  <target-repo>/.claude/workflows/
-cp scripts/odt-transition.sh       <target-repo>/scripts/
-chmod +x <target-repo>/scripts/odt-transition.sh
+mkdir -p <target-repo>/.claude/workflows <target-repo>/.claude/scripts
+cp workflows/openducktor-issue.js      <target-repo>/.claude/workflows/
+cp .claude/scripts/odt-transition.sh   <target-repo>/.claude/scripts/
+chmod +x <target-repo>/.claude/scripts/odt-transition.sh
 ```
 
 Then in that repo, invoke it explicitly:
@@ -74,7 +75,7 @@ Once installed via a plugin, the four agents are not registered as `spec-agent`,
 
 ## The state machine
 
-`scripts/odt-transition.sh` enforces the same transition table as OpenDucktor's `status-transition-policy.ts`:
+`.claude/scripts/odt-transition.sh` enforces the same transition table as OpenDucktor's `status-transition-policy.ts`:
 
 ```
 status:open -> status:spec-ready -> status:ready-for-dev -> status:in-progress
