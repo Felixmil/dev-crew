@@ -46,12 +46,17 @@ const NOTIFY_GITHUB_USERNAME = "Felixmil";
 const mentionSuffix = () =>
   NOTIFY_GITHUB_USERNAME ? ` Mention @${NOTIFY_GITHUB_USERNAME} in the comment so they are notified.` : "";
 
+// In auto mode, a QA rejection sends the issue straight back to
+// build, up to this many build -> QA rounds, before giving up and
+// leaving it at status:in-progress for a human to look at.
+const MAX_QA_ROUNDS = 3;
+
 const PHASE_DEFS = [
   {
     key: "spec",
     label: "Spec",
     tag: "<!-- odt:spec -->",
-    fromStatus: "status:open",
+    fromStatus: ["status:open"],
     gateLabel: "status:spec-awaiting-approval",
     toStatus: "status:spec-ready",
     agentType: "openducktor-agents:spec-agent",
@@ -65,7 +70,7 @@ const PHASE_DEFS = [
     key: "plan",
     label: "Plan",
     tag: "<!-- odt:plan -->",
-    fromStatus: "status:spec-ready",
+    fromStatus: ["status:spec-ready"],
     gateLabel: "status:plan-awaiting-approval",
     toStatus: "status:ready-for-dev",
     agentType: "openducktor-agents:planner-agent",
@@ -79,7 +84,17 @@ const PHASE_DEFS = [
     key: "build",
     label: "Build",
     tag: "<!-- odt:build -->",
-    fromStatus: "status:ready-for-dev",
+    // ready-for-dev is the normal entry; a task/bug issue that skips
+    // spec/plan starts at open -> in-progress directly (see the
+    // README's skip-planning note), and a previously blocked build
+    // resumes from blocked. All three enter the same start transition.
+    fromStatus: ["status:ready-for-dev", "status:in-progress", "status:blocked"],
+    // The transition table has no ready-for-dev -> ai-review edge:
+    // starting work is its own transition (ready-for-dev/blocked ->
+    // in-progress), matching OpenDucktor's odt_build_resumed/
+    // odt_build_completed split. Applied before the agent runs, and
+    // skipped when the issue is already at in-progress (the table has
+    // no in-progress -> in-progress edge).
     gateLabel: "status:build-awaiting-approval",
     toStatus: "status:ai-review",
     agentType: "openducktor-agents:build-agent",
@@ -89,12 +104,18 @@ const PHASE_DEFS = [
       `Make the requested changes, update the existing completion-summary comment in place ` +
       `(do not post a second completion-summary comment), then post a short reply comment ` +
       `summarizing what changed.`,
+    fixupPrompt: (issue, qaReport) =>
+      `Read GitHub issue ${issue}. The QA agent reviewed the pull request and rejected it with this report:\n\n` +
+      `${qaReport}\n\n` +
+      `Address every rejection finding at the root cause, rerun relevant verification, and update the ` +
+      `existing completion-summary comment in place (do not post a second completion-summary comment) ` +
+      `describing what changed in response to the QA report.`,
   },
   {
     key: "qa",
     label: "QA",
     tag: "<!-- odt:qa -->",
-    fromStatus: "status:ai-review",
+    fromStatus: ["status:ai-review"],
     gateLabel: "status:qa-awaiting-approval",
     // No single toStatus: the QA verdict decides human-review vs in-progress.
     agentType: "openducktor-agents:qa-agent",
@@ -151,7 +172,10 @@ function latestDirective(comments) {
   return null;
 }
 
-async function postArtifact(issue, def) {
+async function postArtifact(issue, def, currentStatus) {
+  if (def.startStatus && currentStatus !== def.startStatus) {
+    await transitionTo(issue, def.startStatus);
+  }
   await agent(
     `${def.kickoff(issue)} Tag the posted comment's body with the literal text ${def.tag} on its own line.${mentionSuffix()}`,
     { agentType: def.agentType, phase: def.label },
@@ -163,14 +187,21 @@ async function postQaArtifact(issue, def) {
     `${def.kickoff(issue)} Tag the posted comment's body with the literal text ${def.tag} on its own line.${mentionSuffix()}`,
     { agentType: def.agentType, phase: def.label },
   );
-  return report.includes("QA-VERDICT: approved") ? "approved" : "rejected";
+  return { verdict: report.includes("QA-VERDICT: approved") ? "approved" : "rejected", report };
+}
+
+async function fixupBuild(issue, buildDef, qaReport) {
+  await agent(`${buildDef.fixupPrompt(issue, qaReport)}${mentionSuffix()}`, {
+    agentType: buildDef.agentType,
+    phase: "Build",
+  });
 }
 
 async function revise(issue, def, feedback) {
   const prompt = `${def.revisePrompt(issue, feedback)}${mentionSuffix()}`;
   if (def.key === "qa") {
     const report = await agent(prompt, { agentType: def.agentType, phase: "Revise" });
-    return report.includes("QA-VERDICT: approved") ? "approved" : "rejected";
+    return { verdict: report.includes("QA-VERDICT: approved") ? "approved" : "rejected", report };
   }
   await agent(prompt, { agentType: def.agentType, phase: "Revise" });
   return null;
@@ -187,6 +218,9 @@ if (mode !== "auto" && mode !== "manual") {
   throw new Error(`Unknown mode "${mode}". Use "auto" or "manual".`);
 }
 const issue = issueArg;
+
+const buildDef = PHASE_DEFS.find((def) => def.key === "build");
+const qaDef = PHASE_DEFS.find((def) => def.key === "qa");
 
 let label = await currentLabel(issue);
 
@@ -205,11 +239,23 @@ if (gateDef) {
 
   if (directive.kind === "revise") {
     phase("Revise");
-    const verdict = await revise(issue, gateDef, directive.feedback);
-    if (gateDef.key === "qa" && verdict) {
-      log(`Issue ${issue} QA revised (${verdict}), still awaiting /approve at ${label}.`);
+
+    if (gateDef.key === "qa") {
+      // QA's own rejection reasoning belongs to the code, not the
+      // report: route the feedback (and the QA report itself, for
+      // full context) to the build agent, then re-run QA and re-post
+      // at the same gate rather than re-reviewing QA's own writeup.
+      const postGateComments = await commentsSinceTag(issue, gateDef.tag);
+      const lastReport = [...postGateComments].reverse().find((c) => (c.body ?? "").includes("QA-VERDICT:"));
+      phase("Build");
+      await fixupBuild(issue, buildDef, `${lastReport?.body ?? ""}\n\nAdditional human feedback: ${directive.feedback}`);
+      phase("QA");
+      const { verdict } = await postQaArtifact(issue, qaDef);
+      log(`Issue ${issue} QA re-reviewed after build fixup (${verdict}), still awaiting /approve at ${label}.`);
       return { issue, status: "revised", gate: label, verdict };
     }
+
+    await revise(issue, gateDef, directive.feedback);
     log(`Issue ${issue} ${gateDef.key} revised, still awaiting /approve at ${label}.`);
     return { issue, status: "revised", gate: label };
   }
@@ -229,26 +275,45 @@ if (gateDef) {
 // Walk the remaining phases in order from whichever real status we
 // are now at.
 for (const def of PHASE_DEFS) {
-  if (label !== def.fromStatus) {
+  if (!def.fromStatus.includes(label)) {
     continue;
   }
 
   phase(def.label);
 
   if (def.key === "qa") {
-    const verdict = await postQaArtifact(issue, def);
+    let { verdict, report } = await postQaArtifact(issue, def);
+
     if (mode === "manual") {
       await transitionTo(issue, def.gateLabel);
       log(`Issue ${issue} QA report posted (${verdict}), awaiting /approve at ${def.gateLabel}.`);
       return { issue, status: "awaiting_approval", gate: def.gateLabel, verdict };
     }
-    await transitionTo(issue, verdict === "approved" ? "status:human-review" : "status:in-progress");
-    log(`Issue ${issue} QA ${verdict}.`);
+
+    // Auto mode: loop build -> QA on rejection, up to MAX_QA_ROUNDS
+    // total build attempts, before giving up for a human to look at.
+    let round = 1;
+    while (verdict === "rejected" && round < MAX_QA_ROUNDS) {
+      round += 1;
+      phase("Build");
+      await fixupBuild(issue, buildDef, report);
+      phase("QA");
+      ({ verdict, report } = await postQaArtifact(issue, def));
+    }
+
+    if (verdict === "rejected") {
+      await transitionTo(issue, "status:in-progress");
+      log(`Issue ${issue} still rejected after ${round} QA rounds; left at status:in-progress for a human.`);
+      return { issue, status: "rejected", rounds: round };
+    }
+
+    await transitionTo(issue, "status:human-review");
+    log(`Issue ${issue} QA approved after ${round} round(s).`);
     label = await currentLabel(issue);
     continue;
   }
 
-  await postArtifact(issue, def);
+  await postArtifact(issue, def, label);
 
   if (mode === "manual") {
     await transitionTo(issue, def.gateLabel);

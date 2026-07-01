@@ -61,6 +61,13 @@ Re-running the workflow with no `/approve` or `/revise` comment since the gate w
 
 Every posted or revised comment mentions `@Felixmil` (configurable via `NOTIFY_GITHUB_USERNAME` at the top of the script) so GitHub sends a notification regardless of the repo's default notification settings.
 
+### QA rejection loops back into build
+
+A `QA-VERDICT: rejected` report is fed back to the build agent as fix-it feedback, not left for a human to relay by hand:
+
+- **Auto mode**: rejection re-invokes the build agent with the QA report, then re-runs QA, up to `MAX_QA_ROUNDS` (default 3) total build attempts in the same run. Still rejected after the cap, the issue is left at `status:in-progress` for a human.
+- **Manual mode**: at the `status:qa-awaiting-approval` gate, `/revise <feedback>` sends the QA report plus that feedback to the build agent (not back to the QA agent), then automatically re-runs QA and re-posts at the same gate. `/approve` at that gate still reads whichever verdict is currently posted and transitions accordingly.
+
 ### Agent type names are plugin-prefixed
 
 Once installed via a plugin, the four agents are not registered as `spec-agent`, `planner-agent`, `build-agent`, `qa-agent`. They're namespaced as `openducktor-agents:spec-agent`, `openducktor-agents:planner-agent`, `openducktor-agents:build-agent`, `openducktor-agents:qa-agent`, to avoid colliding with same-named agents from other plugins or from a project's own `.claude/agents/`. `workflows/openducktor-issue.js` already uses the prefixed names. If you write your own workflow or call these agents directly, use the prefixed form; the bare name will fail with an "agent type not found" error listing the actual registered names.
@@ -92,4 +99,4 @@ Manual mode adds four gate labels to the same table, one per phase: `status:spec
 - The QA verdict is a `QA-VERDICT: approved|rejected` string convention read out of the agent's final text, not a typed tool call. Passing a `schema` to that `agent()` call would remove the string-matching risk.
 - No cross-task or cross-issue coherence check. Each issue is planned and built independently; nothing here detects two issues whose specs contradict each other. Neither does OpenDucktor's own state machine, beyond blocking an epic from closing while a subtask is still open.
 - No canonical task-summary object. Every agent re-reads the full issue thread via `gh issue view --comments` instead of a cached document-presence summary.
-- The build phase only fires from `status:ready-for-dev`. A task/bug issue that skipped straight to `status:in-progress`, or a build resumed after `status:blocked`, is not picked up by the current phase loop and needs a follow-up fix to `workflows/openducktor-issue.js`.
+- The QA report and build completion summary live on the issue thread rather than the pull request they actually describe. Spec and plan have to live on the issue (no PR exists yet at that point), but build/QA arguably belong on the PR's own review thread. Not yet changed, since it would also mean scoping `/approve` and `/revise` detection to two different comment streams instead of one.
