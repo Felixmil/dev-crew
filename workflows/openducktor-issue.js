@@ -34,6 +34,14 @@
 // is always safe. If no /approve or /revise comment has been posted
 // since the gate was set, it reports "waiting" and exits without
 // doing anything.
+//
+// A caller sitting at a spec or plan [NEEDS CLARIFICATION] gate (see
+// below) can instead pass args.clarificationAnswer directly, e.g.
+//   Workflow({ scriptPath: "...", args: { issueNumber: 142, clarificationAnswer: "..." } })
+// This re-runs that phase's own agent with the answer and, once the
+// marker is resolved, continues straight into the rest of the
+// pipeline in the same invocation, rather than requiring a /revise
+// comment posted by hand followed by a second run.
 
 export const meta = {
   name: "openducktor-issue",
@@ -72,6 +80,11 @@ const PHASE_DEFS = [
       `Read GitHub issue ${issue}. A human requested changes to the posted spec: "${feedback}". ` +
       `Edit the existing spec comment in place with the revised markdown (do not post a second spec comment), ` +
       `then post a short reply comment summarizing what changed.`,
+    clarificationPrompt: (issue, answer) =>
+      `Read GitHub issue ${issue}. A human answered your open [NEEDS CLARIFICATION] question: "${answer}". ` +
+      `Fold that answer into the spec as a locked decision (do not leave the marker or re-ask the ` +
+      `question), edit the existing spec comment in place with the revised markdown (do not post a ` +
+      `second spec comment), then post a short reply comment confirming what was resolved.`,
   },
   {
     key: "plan",
@@ -87,6 +100,11 @@ const PHASE_DEFS = [
       `Read GitHub issue ${issue}. A human requested changes to the posted plan: "${feedback}". ` +
       `Edit the existing plan comment in place with the revised markdown (do not post a second plan comment), ` +
       `then post a short reply comment summarizing what changed.`,
+    clarificationPrompt: (issue, answer) =>
+      `Read GitHub issue ${issue}. A human answered your open [NEEDS CLARIFICATION] question: "${answer}". ` +
+      `Fold that answer into the plan as a locked decision (do not leave the marker or re-ask the ` +
+      `question), edit the existing plan comment in place with the revised markdown (do not post a ` +
+      `second plan comment), then post a short reply comment confirming what was resolved.`,
   },
   {
     key: "build",
@@ -296,7 +314,7 @@ async function commentsSinceTag(issue, def) {
 // agent actually posted rather than trust its own summary of what it
 // did. Only meaningful for phases whose artifact is a tagged comment
 // (spec, plan, qa); the build phase's initial artifact is the PR
-// body, read separately by fetchPrBody().
+// body, not a tagged comment, so this is never called for it.
 async function fetchTaggedComment(issue, def) {
   const source = await commentSource(issue, def);
   if (!source.ok) {
@@ -360,8 +378,9 @@ async function fixupBuild(issue, buildDef, qaReport) {
   });
 }
 
-async function revise(issue, def, feedback) {
-  const prompt = `${def.revisePrompt(issue, feedback)}${mentionSuffix()}`;
+async function revise(issue, def, feedback, { isClarificationAnswer = false } = {}) {
+  const promptBuilder = isClarificationAnswer ? def.clarificationPrompt : def.revisePrompt;
+  const prompt = `${promptBuilder(issue, feedback)}${mentionSuffix()}`;
   if (def.key === "qa") {
     const report = await agent(prompt, { agentType: def.agentType, phase: "Revise" });
     return { verdict: report.includes("QA-VERDICT: approved") ? "approved" : "rejected", report };
@@ -371,19 +390,26 @@ async function revise(issue, def, feedback) {
 }
 
 // args arrives as one of:
-//   { issueNumber: 142, mode: "auto" | "manual" }   (programmatic Workflow() call)
+//   { issueNumber: 142, mode: "auto" | "manual", clarificationAnswer?: "..." }
+//                                                    (programmatic Workflow() call)
 //   142                                              (bare number)
 //   "142"                                            (slash command, no mode word)
 //   "142 manual"                                     (slash command, with a mode word)
+// clarificationAnswer only comes through the object form; there is no
+// slash-command syntax for freeform text.
 function parseArgs(rawArgs) {
   if (typeof rawArgs === "object" && rawArgs !== null) {
-    return { issue: rawArgs.issueNumber, mode: rawArgs.mode ?? "auto" };
+    return {
+      issue: rawArgs.issueNumber,
+      mode: rawArgs.mode ?? "auto",
+      clarificationAnswer: rawArgs.clarificationAnswer,
+    };
   }
   const tokens = String(rawArgs ?? "").trim().split(/\s+/).filter(Boolean);
-  return { issue: tokens[0], mode: tokens[1] ?? "auto" };
+  return { issue: tokens[0], mode: tokens[1] ?? "auto", clarificationAnswer: undefined };
 }
 
-const { issue, mode } = parseArgs(args);
+const { issue, mode, clarificationAnswer } = parseArgs(args);
 if (!issue) {
   throw new Error(
     'Missing issue number. Pass args: { issueNumber: N, mode: "auto" | "manual" }, or invoke as "/openducktor-issue N" or "/openducktor-issue N manual".',
@@ -403,47 +429,74 @@ let label = await currentLabel(issue);
 // of the mode this run was invoked with.
 const gateDef = PHASE_DEFS.find((def) => def.gateLabel === label);
 if (gateDef) {
-  const comments = await commentsSinceTag(issue, gateDef);
-  const directive = latestDirective(comments);
-
-  if (!directive) {
-    log(`Issue ${issue} is waiting for review at ${label}. Comment /approve or /revise <feedback> to continue.`);
-    return { issue, status: "waiting", gate: label };
-  }
-
-  if (directive.kind === "revise") {
+  // A caller (typically the agent that already relayed a
+  // [NEEDS CLARIFICATION] question to a human and got an answer) can
+  // pass that answer directly instead of first posting a /revise
+  // comment and re-invoking. Only spec and plan ever raise that
+  // marker, so this only applies at their gates; it re-runs that
+  // phase's own agent with the answer, and if the marker is now gone,
+  // continues straight into the rest of the pipeline in this same
+  // invocation instead of requiring a second run just to approve.
+  if (clarificationAnswer && (gateDef.key === "spec" || gateDef.key === "plan")) {
     phase("Revise");
+    await revise(issue, gateDef, clarificationAnswer, { isClarificationAnswer: true });
+    const revised = await fetchTaggedComment(issue, gateDef);
+    if (revised.includes("[NEEDS CLARIFICATION]")) {
+      log(
+        `Issue ${issue} ${gateDef.key} still contains [NEEDS CLARIFICATION] after the answer; ` +
+          `remains at ${label} for another /revise or clarificationAnswer.`,
+      );
+      return { issue, status: "waiting", gate: label };
+    }
+    await transitionTo(issue, gateDef.toStatus);
+    label = await currentLabel(issue);
+  } else {
+    const comments = await commentsSinceTag(issue, gateDef);
+    const directive = latestDirective(comments);
 
-    if (gateDef.key === "qa") {
-      // QA's own rejection reasoning belongs to the code, not the
-      // report: route the feedback (and the QA report itself, for
-      // full context) to the build agent, then re-run QA and re-post
-      // at the same gate rather than re-reviewing QA's own writeup.
-      const postGateComments = await commentsSinceTag(issue, gateDef);
-      const lastReport = [...postGateComments].reverse().find((c) => (c.body ?? "").includes("QA-VERDICT:"));
-      phase("Build");
-      await fixupBuild(issue, buildDef, `${lastReport?.body ?? ""}\n\nAdditional human feedback: ${directive.feedback}`);
-      phase("QA");
-      const { verdict } = await postQaArtifact(issue, qaDef);
-      log(`Issue ${issue} QA re-reviewed after build fixup (${verdict}), still awaiting /approve at ${label}.`);
-      return { issue, status: "revised", gate: label, verdict };
+    if (!directive) {
+      log(`Issue ${issue} is waiting for review at ${label}. Comment /approve or /revise <feedback> to continue.`);
+      return { issue, status: "waiting", gate: label };
     }
 
-    await revise(issue, gateDef, directive.feedback);
-    log(`Issue ${issue} ${gateDef.key} revised, still awaiting /approve at ${label}.`);
-    return { issue, status: "revised", gate: label };
-  }
+    if (directive.kind === "revise") {
+      phase("Revise");
 
-  // directive.kind === "approve"
-  if (gateDef.key === "qa") {
-    const postGateComments = await commentsSinceTag(issue, gateDef);
-    const verdictComment = [...postGateComments].reverse().find((c) => (c.body ?? "").includes("QA-VERDICT:"));
-    const approved = (verdictComment?.body ?? "").includes("QA-VERDICT: approved");
-    await transitionTo(issue, approved ? "status:human-review" : "status:in-progress");
-  } else {
-    await transitionTo(issue, gateDef.toStatus);
+      if (gateDef.key === "qa") {
+        // QA's own rejection reasoning belongs to the code, not the
+        // report: route the feedback (and the QA report itself, for
+        // full context) to the build agent, then re-run QA and re-post
+        // at the same gate rather than re-reviewing QA's own writeup.
+        const postGateComments = await commentsSinceTag(issue, gateDef);
+        const lastReport = [...postGateComments].reverse().find((c) => (c.body ?? "").includes("QA-VERDICT:"));
+        phase("Build");
+        await fixupBuild(
+          issue,
+          buildDef,
+          `${lastReport?.body ?? ""}\n\nAdditional human feedback: ${directive.feedback}`,
+        );
+        phase("QA");
+        const { verdict } = await postQaArtifact(issue, qaDef);
+        log(`Issue ${issue} QA re-reviewed after build fixup (${verdict}), still awaiting /approve at ${label}.`);
+        return { issue, status: "revised", gate: label, verdict };
+      }
+
+      await revise(issue, gateDef, directive.feedback);
+      log(`Issue ${issue} ${gateDef.key} revised, still awaiting /approve at ${label}.`);
+      return { issue, status: "revised", gate: label };
+    }
+
+    // directive.kind === "approve"
+    if (gateDef.key === "qa") {
+      const postGateComments = await commentsSinceTag(issue, gateDef);
+      const verdictComment = [...postGateComments].reverse().find((c) => (c.body ?? "").includes("QA-VERDICT:"));
+      const approved = (verdictComment?.body ?? "").includes("QA-VERDICT: approved");
+      await transitionTo(issue, approved ? "status:human-review" : "status:in-progress");
+    } else {
+      await transitionTo(issue, gateDef.toStatus);
+    }
+    label = await currentLabel(issue);
   }
-  label = await currentLabel(issue);
 }
 
 // Walk the remaining phases in order from whichever real status we
