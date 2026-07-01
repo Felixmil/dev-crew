@@ -134,11 +134,21 @@ async function transitionTo(issue, to) {
   await agent(`Run: bash scripts/odt-transition.sh ${issue} ${to}`, { label: "transition" });
 }
 
+// A freshly filed issue has no status:* label yet. Treat that as
+// status:open and apply the label, so the issue's actual state
+// matches what this workflow believes from here on, rather than
+// silently diverging the way a missing status:closed label did.
 async function currentLabel(issue) {
-  return await agent(
+  const raw = await agent(
     `Run: gh issue view ${issue} --json labels --jq '.labels[].name | select(startswith("status:"))'. Return only that label string.`,
     { label: "read-label" },
   );
+  const trimmed = raw.trim();
+  if (trimmed) {
+    return trimmed;
+  }
+  await agent(`Run: gh issue edit ${issue} --add-label status:open`, { label: "seed-open-label" });
+  return "status:open";
 }
 
 // Every comment on the issue that comes after the one tagged with

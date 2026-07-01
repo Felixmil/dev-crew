@@ -83,7 +83,9 @@ status:open -> status:spec-ready -> status:ready-for-dev -> status:in-progress
 
 Task and bug issues (label `type:task` or `type:bug`) may skip straight from `status:open` to `status:in-progress`.
 
-No agent in `agents/` is given `gh issue edit --add-label`. Only `odt-transition.sh` writes labels, and it refuses any transition not in the table above. This is deliberate: the model that can be talked into anything should never hold the pen that moves the state machine.
+No agent in `agents/` is given `gh issue edit --add-label`. Only `odt-transition.sh` writes label *transitions*, and it refuses any transition not in the table above. This is deliberate: the model that can be talked into anything should never hold the pen that moves the state machine.
+
+The one exception is bootstrapping: a freshly filed issue has no `status:*` label at all, which is not a transition (there is no "from" state), so `workflows/openducktor-issue.js` seeds `status:open` directly via `gh issue edit --add-label` the first time it sees such an issue, then proceeds normally through `odt-transition.sh` from there.
 
 Manual mode adds four gate labels to the same table, one per phase: `status:spec-awaiting-approval`, `status:plan-awaiting-approval`, `status:build-awaiting-approval`, `status:qa-awaiting-approval`. Each is entered from the status that precedes its phase and exits, on `/approve`, to the exact real status that phase would have produced in auto mode. Auto mode never touches these labels.
 
