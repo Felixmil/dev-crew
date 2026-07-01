@@ -93,9 +93,12 @@ const PHASE_DEFS = [
     // The transition table has no ready-for-dev -> ai-review edge:
     // starting work is its own transition (ready-for-dev/blocked ->
     // in-progress), matching OpenDucktor's odt_build_resumed/
-    // odt_build_completed split. Applied before the agent runs, and
-    // skipped when the issue is already at in-progress (the table has
-    // no in-progress -> in-progress edge).
+    // odt_build_completed split. startStatus is applied before the
+    // agent runs (postArtifact), and skipped when the issue is
+    // already at in-progress (the table has no in-progress ->
+    // in-progress edge). toStatus (in-progress -> ai-review) is then
+    // applied after the build agent completes.
+    startStatus: "status:in-progress",
     gateLabel: "status:build-awaiting-approval",
     toStatus: "status:ai-review",
     agentType: "openducktor-agents:build-agent",
