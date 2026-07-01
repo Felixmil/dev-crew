@@ -86,6 +86,8 @@ Instead, after posting a spec or plan, the workflow re-fetches the actual commen
 
 A calling agent that already relayed the question to a human and got an answer does not need to post a `/revise` comment and re-invoke by hand: pass `args.clarificationAnswer` directly (`Workflow({ ..., args: { issueNumber, clarificationAnswer: "..." } })`). The workflow re-runs that phase's own agent with the answer, edits the existing artifact in place, and, once the marker is gone, continues straight into the rest of the pipeline in the same invocation instead of stopping again just to be approved.
 
+`parseArgs()` also accepts that same object JSON-stringified (some resume/relaunch paths re-serialize `args` to a string before the script sees it): a string starting with `{` is parsed back into an object before being read, rather than falling through to the slash-command tokenizer and mangling the object into garbage tokens.
+
 Build and QA have no equivalent marker or gate. `build-agent`'s prompt says to stop and post a plain comment explaining a scope-exceeding blocker instead of expanding scope silently, but the workflow script does not currently detect that comment or react to it differently from a normal completion summary; a scope blocker raised mid-build will not stop the pipeline the way `[NEEDS CLARIFICATION]` now stops spec/plan.
 
 ### Mechanical steps run on a cheaper model

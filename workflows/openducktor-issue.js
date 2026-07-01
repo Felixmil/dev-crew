@@ -392,20 +392,32 @@ async function revise(issue, def, feedback, { isClarificationAnswer = false } = 
 // args arrives as one of:
 //   { issueNumber: 142, mode: "auto" | "manual", clarificationAnswer?: "..." }
 //                                                    (programmatic Workflow() call)
+//   '{"issueNumber": 142, ...}'                       (the object form, but
+//                                                       re-serialized to a JSON
+//                                                       string by some resume/
+//                                                       relaunch paths)
 //   142                                              (bare number)
 //   "142"                                            (slash command, no mode word)
 //   "142 manual"                                     (slash command, with a mode word)
 // clarificationAnswer only comes through the object form; there is no
 // slash-command syntax for freeform text.
 function parseArgs(rawArgs) {
-  if (typeof rawArgs === "object" && rawArgs !== null) {
+  let value = rawArgs;
+  if (typeof value === "string" && value.trim().startsWith("{")) {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      // Not actually JSON; fall through to the plain string parsing below.
+    }
+  }
+  if (typeof value === "object" && value !== null) {
     return {
-      issue: rawArgs.issueNumber,
-      mode: rawArgs.mode ?? "auto",
-      clarificationAnswer: rawArgs.clarificationAnswer,
+      issue: value.issueNumber,
+      mode: value.mode ?? "auto",
+      clarificationAnswer: value.clarificationAnswer,
     };
   }
-  const tokens = String(rawArgs ?? "").trim().split(/\s+/).filter(Boolean);
+  const tokens = String(value ?? "").trim().split(/\s+/).filter(Boolean);
   return { issue: tokens[0], mode: tokens[1] ?? "auto", clarificationAnswer: undefined };
 }
 
