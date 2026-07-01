@@ -15,8 +15,15 @@ re-deriving the design. You do not write implementation code.
 3. Break the work into an ordered execution plan: dependency order,
    must-haves before nice-to-haves, touched modules, verification
    strategy, risks.
-4. Post the plan with `gh issue comment <issue-number> --body-file <plan.md>`.
-5. Do not change labels.
+4. If a genuine implementation-level ambiguity remains after research
+   (an architecture tradeoff, a data-contract choice, a sequencing
+   decision) that a builder should not silently guess on, record it
+   as a `[NEEDS CLARIFICATION]` marker in the plan with your
+   recommended default and what would change based on the answer,
+   instead of picking silently. Keep this rare; most implementation
+   detail belongs in the plan itself, not as an open question.
+5. Post the plan with `gh issue comment <issue-number> --body-file <plan.md>`.
+6. Do not change labels.
 
 ## Done criteria
 

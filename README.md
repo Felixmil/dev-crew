@@ -69,6 +69,14 @@ A `QA-VERDICT: rejected` report is fed back to the build agent as fix-it feedbac
 - **Auto mode**: rejection re-invokes the build agent with the QA report, then re-runs QA, up to `MAX_QA_ROUNDS` (default 3) total build attempts in the same run. Still rejected after the cap, the issue is left at `status:in-progress` for a human.
 - **Manual mode**: at the `status:qa-awaiting-approval` gate, `/revise <feedback>` sends the QA report plus that feedback to the build agent (not back to the QA agent), then automatically re-runs QA and re-posts at the same gate. `/approve` at that gate still reads whichever verdict is currently posted and transitions accordingly.
 
+### A real design ambiguity forces a gate even in auto mode
+
+`spec-agent` and `planner-agent` are both told to record a genuine, materially scope-changing ambiguity as a `[NEEDS CLARIFICATION]` marker with a recommended default, instead of silently guessing. Auto mode would otherwise adopt that default and move straight to the next phase without anyone seeing the question.
+
+Instead, after posting a spec or plan, the workflow re-fetches the actual comment and checks it for that marker. If present, it forces the same `status:<phase>-awaiting-approval` gate manual mode uses, regardless of which mode the run was invoked with, and logs the open question. `/approve` accepts the recommended default and continues; `/revise <feedback>` resolves it differently.
+
+Build and QA have no equivalent marker or gate. `build-agent`'s prompt says to stop and post a plain comment explaining a scope-exceeding blocker instead of expanding scope silently, but the workflow script does not currently detect that comment or react to it differently from a normal completion summary; a scope blocker raised mid-build will not stop the pipeline the way `[NEEDS CLARIFICATION]` now stops spec/plan.
+
 ### Mechanical steps run on a cheaper model
 
 `spec-agent`, `planner-agent`, `build-agent`, and `qa-agent` have no `model:` in their frontmatter, so they inherit whichever model the workflow itself is running under (Opus, Sonnet, whatever the invoking session resolved to). That's deliberate: these four do the actual reasoning, writing, and reviewing, and are the last place to cut model tier.

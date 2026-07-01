@@ -224,6 +224,27 @@ async function commentsSinceTag(issue, tag) {
   return Array.isArray(out?.comments) ? out.comments : [];
 }
 
+// The current body of the comment tagged with `tag`, or "" if no
+// such comment exists. Used to inspect what an agent actually posted
+// rather than trust its own summary of what it did.
+async function fetchTaggedComment(issue, tag) {
+  const jq = `[.comments[] | select(.body | contains("${tag}"))] | last | .body // ""`;
+  const out = await agent(
+    `Run exactly: gh issue view ${issue} --json comments --jq '${jq}'. Set body to that raw stdout, or "" if stdout was empty.`,
+    {
+      label: "read-tagged-comment",
+      model: "haiku",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["body"],
+        properties: { body: { type: "string" } },
+      },
+    },
+  );
+  return String(out?.body ?? "");
+}
+
 function latestDirective(comments) {
   for (let i = comments.length - 1; i >= 0; i--) {
     const body = (comments[i].body ?? "").trim();
@@ -390,6 +411,27 @@ for (const def of PHASE_DEFS) {
   }
 
   await postArtifact(issue, def, label);
+
+  // Spec and plan are the only phases whose prompts are told to
+  // record an unresolved [NEEDS CLARIFICATION] marker instead of
+  // silently guessing. A real, unresolved design ambiguity should
+  // not be steamrolled by auto mode adopting the agent's recommended
+  // default without a human ever seeing it: force the same gate
+  // manual mode uses, regardless of which mode this run was invoked
+  // with. Re-inspect the actual posted comment rather than trust the
+  // agent's own summary of what it wrote.
+  if (def.key === "spec" || def.key === "plan") {
+    const posted = await fetchTaggedComment(issue, def.tag);
+    if (posted.includes("[NEEDS CLARIFICATION]")) {
+      await transitionTo(issue, def.gateLabel);
+      log(
+        `Issue ${issue} ${def.key} posted with an unresolved [NEEDS CLARIFICATION] marker; ` +
+          `forcing a gate at ${def.gateLabel} regardless of mode. Comment /approve to accept the ` +
+          `recommended default, or /revise <feedback> to resolve it differently.`,
+      );
+      return { issue, status: "awaiting_clarification", gate: def.gateLabel };
+    }
+  }
 
   if (mode === "manual") {
     await transitionTo(issue, def.gateLabel);
