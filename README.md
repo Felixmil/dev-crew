@@ -42,8 +42,24 @@ chmod +x <target-repo>/scripts/odt-transition.sh
 Then in that repo, invoke it explicitly:
 
 ```
-run the openducktor-issue workflow on issue 142
+run the openducktor-issue workflow on issue 142 in auto mode
+run the openducktor-issue workflow on issue 142 in manual mode
 ```
+
+or programmatically: `Workflow({ scriptPath: ".claude/workflows/openducktor-issue.js", args: { issueNumber: 142, mode: "auto" } })`. The `/openducktor-issue 142` slash-command form always runs in auto mode, since a slash command only passes a bare string as `args`.
+
+### Auto mode versus manual mode
+
+**Auto mode** runs straight through: each phase's agent posts its artifact, the transition script immediately advances the label, and the next phase starts in the same invocation, ending at a QA verdict.
+
+**Manual mode** stops after every phase. The phase's artifact comment is posted, tagged with a hidden `<!-- odt:<phase> -->` marker, and the issue is set to a `status:<phase>-awaiting-approval` gate label. The run ends there. A human reviews the artifact on the issue and comments:
+
+- `/approve`, to advance past the gate. Re-running the workflow (same issue, same or no mode argument) picks this up, performs the real transition, and continues into the next phase, which stops at its own gate in turn.
+- `/revise <feedback>`, to send that feedback back into the same phase's agent. The agent edits the existing tagged comment in place (it does not post a second copy) and replies summarizing what changed. The issue stays at the same gate, awaiting another `/approve` or `/revise`.
+
+Re-running the workflow with no `/approve` or `/revise` comment since the gate was set is always safe: it reports "waiting for review" and exits without touching anything.
+
+Every posted or revised comment mentions `@Felixmil` (configurable via `NOTIFY_GITHUB_USERNAME` at the top of the script) so GitHub sends a notification regardless of the repo's default notification settings.
 
 ### Agent type names are plugin-prefixed
 
@@ -62,10 +78,13 @@ Task and bug issues (label `type:task` or `type:bug`) may skip straight from `st
 
 No agent in `agents/` is given `gh issue edit --add-label`. Only `odt-transition.sh` writes labels, and it refuses any transition not in the table above. This is deliberate: the model that can be talked into anything should never hold the pen that moves the state machine.
 
+Manual mode adds four gate labels to the same table, one per phase: `status:spec-awaiting-approval`, `status:plan-awaiting-approval`, `status:build-awaiting-approval`, `status:qa-awaiting-approval`. Each is entered from the status that precedes its phase and exits, on `/approve`, to the exact real status that phase would have produced in auto mode. Auto mode never touches these labels.
+
 ## Target repo prerequisites
 
 - `gh` CLI authenticated against the repo.
 - Labels created: `status:open`, `status:spec-ready`, `status:ready-for-dev`, `status:in-progress`, `status:blocked`, `status:ai-review`, `status:human-review`, `status:closed`, plus `type:task` / `type:bug` / `type:feature` / `type:epic` if you want the skip-spec shortcut to apply.
+- For manual mode: also create `status:spec-awaiting-approval`, `status:plan-awaiting-approval`, `status:build-awaiting-approval`, `status:qa-awaiting-approval`.
 
 ## Known gaps versus OpenDucktor
 
@@ -73,3 +92,4 @@ No agent in `agents/` is given `gh issue edit --add-label`. Only `odt-transition
 - The QA verdict is a `QA-VERDICT: approved|rejected` string convention read out of the agent's final text, not a typed tool call. Passing a `schema` to that `agent()` call would remove the string-matching risk.
 - No cross-task or cross-issue coherence check. Each issue is planned and built independently; nothing here detects two issues whose specs contradict each other. Neither does OpenDucktor's own state machine, beyond blocking an epic from closing while a subtask is still open.
 - No canonical task-summary object. Every agent re-reads the full issue thread via `gh issue view --comments` instead of a cached document-presence summary.
+- The build phase only fires from `status:ready-for-dev`. A task/bug issue that skipped straight to `status:in-progress`, or a build resumed after `status:blocked`, is not picked up by the current phase loop and needs a follow-up fix to `workflows/openducktor-issue.js`.

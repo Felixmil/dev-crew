@@ -8,6 +8,12 @@
 # directly; this script is the only thing that moves the state
 # machine, so an illegal transition fails loudly instead of quietly
 # corrupting the issue's status.
+#
+# The four status:*-awaiting-approval labels are gates used only in
+# the workflow's manual mode. A gate is entered from the status that
+# precedes a phase and, once a human comments /approve, exits to the
+# exact real status that phase's output would have produced in auto
+# mode. Auto mode never touches these labels.
 set -euo pipefail
 
 issue="$1"
@@ -23,15 +29,25 @@ allowed() {
   case "$current -> $to" in
     "status:open -> status:spec-ready") return 0 ;;
     "status:open -> status:in-progress") [[ "$is_task" == "true" ]] ;;
+    "status:open -> status:spec-awaiting-approval") return 0 ;;
+    "status:spec-awaiting-approval -> status:spec-ready") return 0 ;;
     "status:spec-ready -> status:ready-for-dev") return 0 ;;
     "status:spec-ready -> status:in-progress") [[ "$is_task" == "true" ]] ;;
+    "status:spec-ready -> status:plan-awaiting-approval") return 0 ;;
+    "status:plan-awaiting-approval -> status:ready-for-dev") return 0 ;;
     "status:ready-for-dev -> status:in-progress") return 0 ;;
+    "status:ready-for-dev -> status:build-awaiting-approval") return 0 ;;
     "status:in-progress -> status:ai-review") return 0 ;;
     "status:in-progress -> status:human-review") return 0 ;;
     "status:in-progress -> status:blocked") return 0 ;;
+    "status:in-progress -> status:build-awaiting-approval") return 0 ;;
+    "status:build-awaiting-approval -> status:ai-review") return 0 ;;
     "status:blocked -> status:in-progress") return 0 ;;
     "status:ai-review -> status:in-progress") return 0 ;;
     "status:ai-review -> status:human-review") return 0 ;;
+    "status:ai-review -> status:qa-awaiting-approval") return 0 ;;
+    "status:qa-awaiting-approval -> status:human-review") return 0 ;;
+    "status:qa-awaiting-approval -> status:in-progress") return 0 ;;
     "status:human-review -> status:in-progress") return 0 ;;
     "status:human-review -> status:closed") return 0 ;;
     *) return 1 ;;
