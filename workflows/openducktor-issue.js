@@ -5,6 +5,7 @@
 // agents from this plugin to be installed.
 //
 // Run with: Workflow({ scriptPath: ".claude/workflows/openducktor-issue.js", args: { issueNumber: 142 } })
+// or as a slash command: /openducktor-issue 142 (args arrives as the bare string "142")
 
 export const meta = {
   name: "openducktor-issue",
@@ -12,7 +13,12 @@ export const meta = {
   phases: [{ title: "Spec" }, { title: "Plan" }, { title: "Build" }, { title: "QA" }],
 };
 
-const issue = args.issueNumber;
+const issue = typeof args === "object" && args !== null ? args.issueNumber : args;
+if (!issue) {
+  throw new Error(
+    'Missing issue number. Pass args: { issueNumber: N } or invoke as "/openducktor-issue N".',
+  );
+}
 const label = await agent(
   `Run: gh issue view ${issue} --json labels --jq '.labels[].name | select(startswith("status:"))'. Return only that label string.`,
   { label: "read-label" },
@@ -25,7 +31,7 @@ async function transition(to) {
 if (label === "status:open") {
   phase("Spec");
   await agent(`Read GitHub issue ${issue} and write its specification.`, {
-    agentType: "spec-agent",
+    agentType: "openducktor-agents:spec-agent",
     phase: "Spec",
   });
   await transition("status:spec-ready");
@@ -34,7 +40,7 @@ if (label === "status:open") {
 if (label === "status:open" || label === "status:spec-ready") {
   phase("Plan");
   await agent(`Read GitHub issue ${issue}'s spec and write its implementation plan.`, {
-    agentType: "planner-agent",
+    agentType: "openducktor-agents:planner-agent",
     phase: "Plan",
   });
   await transition("status:ready-for-dev");
@@ -42,7 +48,7 @@ if (label === "status:open" || label === "status:spec-ready") {
 
 phase("Build");
 await agent(`Implement GitHub issue ${issue} per its spec and plan.`, {
-  agentType: "build-agent",
+  agentType: "openducktor-agents:build-agent",
   phase: "Build",
 });
 await transition("status:ai-review");
@@ -50,7 +56,7 @@ await transition("status:ai-review");
 phase("QA");
 const qaReport = await agent(
   `Review the pull request for GitHub issue ${issue} against its spec and plan.`,
-  { agentType: "qa-agent", phase: "QA" },
+  { agentType: "openducktor-agents:qa-agent", phase: "QA" },
 );
 
 if (qaReport.includes("QA-VERDICT: approved")) {

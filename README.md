@@ -45,6 +45,10 @@ Then in that repo, invoke it explicitly:
 run the openducktor-issue workflow on issue 142
 ```
 
+### Agent type names are plugin-prefixed
+
+Once installed via a plugin, the four agents are not registered as `spec-agent`, `planner-agent`, `build-agent`, `qa-agent`. They're namespaced as `openducktor-agents:spec-agent`, `openducktor-agents:planner-agent`, `openducktor-agents:build-agent`, `openducktor-agents:qa-agent`, to avoid colliding with same-named agents from other plugins or from a project's own `.claude/agents/`. `workflows/openducktor-issue.js` already uses the prefixed names. If you write your own workflow or call these agents directly, use the prefixed form; the bare name will fail with an "agent type not found" error listing the actual registered names.
+
 ## The state machine
 
 `scripts/odt-transition.sh` enforces the same transition table as OpenDucktor's `status-transition-policy.ts`:
