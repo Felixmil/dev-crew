@@ -1,0 +1,16 @@
+{
+  "name": "openducktor-agents",
+  "description": "Spec, planner, build, and QA subagents modeled on OpenDucktor's agent workflow, coordinated against GitHub issue labels",
+  "version": "0.1.0",
+  "author": {
+    "name": "Felix Mil"
+  },
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "workflow",
+    "spec-driven-development",
+    "github-issues",
+    "qa"
+  ]
+}

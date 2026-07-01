@@ -1,0 +1,13 @@
+{
+  "name": "openducktor-agents",
+  "owner": {
+    "name": "Felix Mil"
+  },
+  "plugins": [
+    {
+      "name": "openducktor-agents",
+      "source": "./",
+      "description": "Spec, planner, build, and QA subagents modeled on OpenDucktor's agent workflow"
+    }
+  ]
+}
