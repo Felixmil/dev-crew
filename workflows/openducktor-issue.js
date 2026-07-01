@@ -132,7 +132,10 @@ const PHASE_DEFS = [
 ];
 
 async function transitionTo(issue, to) {
-  await agent(`Run: bash .claude/scripts/odt-transition.sh ${issue} ${to}`, { label: "transition" });
+  await agent(`Run: bash .claude/scripts/odt-transition.sh ${issue} ${to}`, {
+    label: "transition",
+    model: "haiku",
+  });
 }
 
 // A freshly filed issue has no status:* label yet. Treat that as
@@ -154,6 +157,7 @@ async function currentLabel(issue) {
       `Set statusLabel to the exact status:* label from stdout, or "" if stdout was empty.`,
     {
       label: "read-label",
+      model: "haiku",
       schema: {
         type: "object",
         additionalProperties: false,
@@ -171,7 +175,10 @@ async function currentLabel(issue) {
   if (match) {
     return match[0];
   }
-  await agent(`Run: gh issue edit ${issue} --add-label status:open`, { label: "seed-open-label" });
+  await agent(`Run: gh issue edit ${issue} --add-label status:open`, {
+    label: "seed-open-label",
+    model: "haiku",
+  });
   return "status:open";
 }
 
@@ -183,14 +190,35 @@ async function commentsSinceTag(issue, tag) {
     `.comments as $c | ($c | to_entries | map(select(.value.body | contains("${tag}"))) | ` +
     `if length == 0 then -1 else .[-1].key end) as $i | ` +
     `[$c[($i + 1):][] | {body: .body}]`;
-  const result = await agent(`Run exactly: gh issue view ${issue} --json comments --jq '${jq}'. Return only its raw stdout.`, {
-    label: "read-comments-since-tag",
-  });
-  try {
-    return JSON.parse(result);
-  } catch {
-    return [];
-  }
+  // Same structural risk as currentLabel(): an unconstrained agent
+  // narrating an empty or malformed result instead of echoing raw
+  // JSON would silently degrade to "no directive yet" today, which
+  // happens to be a safe direction to fail in, but a schema removes
+  // the ambiguity rather than relying on that being safe by luck.
+  const out = await agent(
+    `Run exactly: gh issue view ${issue} --json comments --jq '${jq}'. Set comments to the parsed JSON array from stdout, or [] if stdout was empty.`,
+    {
+      label: "read-comments-since-tag",
+      model: "haiku",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["comments"],
+        properties: {
+          comments: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["body"],
+              properties: { body: { type: "string" } },
+            },
+          },
+        },
+      },
+    },
+  );
+  return Array.isArray(out?.comments) ? out.comments : [];
 }
 
 function latestDirective(comments) {
