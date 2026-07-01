@@ -15,17 +15,21 @@
 // a QA verdict in one invocation.
 //
 // manual mode: each phase stops at a status:<phase>-awaiting-approval
-// gate after posting its artifact as a tagged issue comment, and the
-// run ends. A human reviews the artifact on the issue and comments
-// either:
+// gate after posting its artifact, and the run ends. Spec and plan
+// post to the issue (tagged comments); build and QA post to the
+// linked pull request instead (build's initial artifact is the PR's
+// own body, QA's is a tagged PR comment), since that is what QA and
+// any human review actually looks at. A human reviews the artifact
+// where it was posted and comments either:
 //   /approve                 -> advance to the next real status and
 //                               continue into the next phase (which
 //                               will stop at its own gate in turn)
 //   /revise <feedback text>  -> re-run the same phase's agent with
 //                               that feedback, editing the existing
-//                               tagged comment in place and replying
-//                               to the /revise comment, then stay at
-//                               the same gate
+//                               artifact in place (or replying as a
+//                               comment, for build) and replying to
+//                               the /revise comment, then stay at the
+//                               same gate
 // Re-running this script with the same issue number and mode: manual
 // is always safe. If no /approve or /revise comment has been posted
 // since the gate was set, it reports "waiting" and exits without
@@ -57,6 +61,8 @@ const PHASE_DEFS = [
     key: "spec",
     label: "Spec",
     tag: "<!-- odt:spec -->",
+    // No PR exists yet at this point; spec and plan live on the issue.
+    commentTarget: "issue",
     fromStatus: ["status:open"],
     gateLabel: "status:spec-awaiting-approval",
     toStatus: "status:spec-ready",
@@ -71,6 +77,7 @@ const PHASE_DEFS = [
     key: "plan",
     label: "Plan",
     tag: "<!-- odt:plan -->",
+    commentTarget: "issue",
     fromStatus: ["status:spec-ready"],
     gateLabel: "status:plan-awaiting-approval",
     toStatus: "status:ready-for-dev",
@@ -85,6 +92,16 @@ const PHASE_DEFS = [
     key: "build",
     label: "Build",
     tag: "<!-- odt:build -->",
+    // The pull request this phase creates is what QA and any human
+    // review actually looks at. The initial completion summary is
+    // the pull request's own body/description, not a comment, since
+    // it is naturally "what this PR does." Every later round (a QA
+    // rejection fixup, or a human /revise at the build gate) replies
+    // as an ordinary PR comment instead of re-editing the body. The
+    // PR number is re-derived per run via findLinkedPr(), never
+    // carried across runs.
+    commentTarget: "pr",
+    initialArtifactIsPrBody: true,
     // ready-for-dev is the normal entry; a task/bug issue that skips
     // spec/plan starts at open -> in-progress directly (see the
     // README's skip-planning note), and a previously blocked build
@@ -102,35 +119,39 @@ const PHASE_DEFS = [
     gateLabel: "status:build-awaiting-approval",
     toStatus: "status:ai-review",
     agentType: "openducktor-agents:build-agent",
-    kickoff: (issue) => `Implement GitHub issue ${issue} per its spec and plan.`,
+    kickoff: (issue) =>
+      `Implement GitHub issue ${issue} per its spec and plan. Open or update the pull request first, ` +
+      `then set the completion summary as that pull request's own body/description with ` +
+      `gh pr edit --body (not a comment): what changed, any deviations from the plan, verification performed.`,
     revisePrompt: (issue, feedback) =>
       `Read GitHub issue ${issue}. A human requested changes to the implementation: "${feedback}". ` +
-      `Make the requested changes, update the existing completion-summary comment in place ` +
-      `(do not post a second completion-summary comment), then post a short reply comment ` +
-      `summarizing what changed.`,
+      `Make the requested changes, then reply with a pull request comment (do not edit the pull ` +
+      `request body) summarizing what changed.`,
     fixupPrompt: (issue, qaReport) =>
       `Read GitHub issue ${issue}. The QA agent reviewed the pull request and rejected it with this report:\n\n` +
       `${qaReport}\n\n` +
-      `Address every rejection finding at the root cause, rerun relevant verification, and update the ` +
-      `existing completion-summary comment in place (do not post a second completion-summary comment) ` +
-      `describing what changed in response to the QA report.`,
+      `Address every rejection finding at the root cause, rerun relevant verification, then reply with a ` +
+      `pull request comment (do not edit the pull request body) describing what changed in response ` +
+      `to the QA report.`,
   },
   {
     key: "qa",
     label: "QA",
     tag: "<!-- odt:qa -->",
+    commentTarget: "pr",
     fromStatus: ["status:ai-review"],
     gateLabel: "status:qa-awaiting-approval",
     // No single toStatus: the QA verdict decides human-review vs in-progress.
     agentType: "openducktor-agents:qa-agent",
     kickoff: (issue) =>
       `Review the pull request for GitHub issue ${issue} against its spec and plan. ` +
+      `Post the QA report as a comment on the pull request (not the issue, and not the pull request body). ` +
       `End your report with exactly one line, either "QA-VERDICT: approved" or "QA-VERDICT: rejected".`,
     revisePrompt: (issue, feedback) =>
       `Read GitHub issue ${issue}. A human requested another look at the QA report: "${feedback}". ` +
-      `Re-review, edit the existing QA report comment in place (do not post a second QA report comment), ` +
-      `end it with exactly one "QA-VERDICT: approved" or "QA-VERDICT: rejected" line, ` +
-      `then post a short reply comment summarizing what changed.`,
+      `Re-review, edit the existing QA report comment on the pull request in place (do not post a ` +
+      `second QA report comment), end it with exactly one "QA-VERDICT: approved" or ` +
+      `"QA-VERDICT: rejected" line, then post a short reply comment summarizing what changed.`,
   },
 ];
 
@@ -185,12 +206,58 @@ async function currentLabel(issue) {
   return "status:open";
 }
 
-// Every comment on the issue that comes after the one tagged with
-// `tag`, oldest first, as an array of { body } objects. [] if the
-// tagged comment does not exist yet.
-async function commentsSinceTag(issue, tag) {
+// The pull request GitHub considers linked to this issue (the PR
+// whose body references it, e.g. via "Closes #N"), or null if none
+// exists yet. Re-derived on every call rather than carried across
+// workflow runs, since a fresh invocation has no memory of a PR
+// number a prior run may have learned.
+async function findLinkedPr(issue) {
+  const out = await agent(
+    `Run: gh repo view --json owner,name --jq '.owner.login + " " + .name'. Then run exactly: ` +
+      `gh api graphql -f query='query { repository(owner: "OWNER", name: "NAME") { issue(number: ${issue}) { ` +
+      `closedByPullRequestsReferences(first: 5) { nodes { number } } } } }' with OWNER and NAME substituted ` +
+      `from the first command. Set prNumber to the first node's number, or null if there are none.`,
+    {
+      label: "find-linked-pr",
+      model: "haiku",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["prNumber"],
+        properties: {
+          prNumber: { type: ["integer", "null"], description: "The linked PR number, or null if none." },
+        },
+      },
+    },
+  );
+  return typeof out?.prNumber === "number" ? out.prNumber : null;
+}
+
+// `gh` invocation fragment for reading comments: the issue itself for
+// commentTarget "issue", or the linked PR for commentTarget "pr". Both
+// expose the same --json comments shape.
+async function commentSource(issue, def) {
+  if (def.commentTarget !== "pr") {
+    return { target: `issue view ${issue}`, ok: true };
+  }
+  const pr = await findLinkedPr(issue);
+  return pr ? { target: `pr view ${pr}`, ok: true } : { target: null, ok: false };
+}
+
+// Every comment at def's comment target that comes after the one
+// tagged with `tag`, oldest first, as an array of { body } objects.
+// If the tag is not found (including when the target has no comments
+// yet, or commentTarget is "pr" and no PR exists yet), returns every
+// comment at that target, which is also the correct behavior for the
+// build phase: its initial artifact is the PR body, not a comment,
+// so there is nothing to scan past.
+async function commentsSinceTag(issue, def) {
+  const source = await commentSource(issue, def);
+  if (!source.ok) {
+    return [];
+  }
   const jq =
-    `.comments as $c | ($c | to_entries | map(select(.value.body | contains("${tag}"))) | ` +
+    `.comments as $c | ($c | to_entries | map(select(.value.body | contains("${def.tag}"))) | ` +
     `if length == 0 then -1 else .[-1].key end) as $i | ` +
     `[$c[($i + 1):][] | {body: .body}]`;
   // Same structural risk as currentLabel(): an unconstrained agent
@@ -199,7 +266,7 @@ async function commentsSinceTag(issue, tag) {
   // happens to be a safe direction to fail in, but a schema removes
   // the ambiguity rather than relying on that being safe by luck.
   const out = await agent(
-    `Run exactly: gh issue view ${issue} --json comments --jq '${jq}'. Set comments to the parsed JSON array from stdout, or [] if stdout was empty.`,
+    `Run exactly: gh ${source.target} --json comments --jq '${jq}'. Set comments to the parsed JSON array from stdout, or [] if stdout was empty.`,
     {
       label: "read-comments-since-tag",
       model: "haiku",
@@ -224,13 +291,20 @@ async function commentsSinceTag(issue, tag) {
   return Array.isArray(out?.comments) ? out.comments : [];
 }
 
-// The current body of the comment tagged with `tag`, or "" if no
-// such comment exists. Used to inspect what an agent actually posted
-// rather than trust its own summary of what it did.
-async function fetchTaggedComment(issue, tag) {
-  const jq = `[.comments[] | select(.body | contains("${tag}"))] | last | .body // ""`;
+// The current body of the comment tagged with `tag` at def's comment
+// target, or "" if no such comment exists. Used to inspect what an
+// agent actually posted rather than trust its own summary of what it
+// did. Only meaningful for phases whose artifact is a tagged comment
+// (spec, plan, qa); the build phase's initial artifact is the PR
+// body, read separately by fetchPrBody().
+async function fetchTaggedComment(issue, def) {
+  const source = await commentSource(issue, def);
+  if (!source.ok) {
+    return "";
+  }
+  const jq = `[.comments[] | select(.body | contains("${def.tag}"))] | last | .body // ""`;
   const out = await agent(
-    `Run exactly: gh issue view ${issue} --json comments --jq '${jq}'. Set body to that raw stdout, or "" if stdout was empty.`,
+    `Run exactly: gh ${source.target} --json comments --jq '${jq}'. Set body to that raw stdout, or "" if stdout was empty.`,
     {
       label: "read-tagged-comment",
       model: "haiku",
@@ -262,10 +336,13 @@ async function postArtifact(issue, def, currentStatus) {
   if (def.startStatus && currentStatus !== def.startStatus) {
     await transitionTo(issue, def.startStatus);
   }
-  await agent(
-    `${def.kickoff(issue)} Tag the posted comment's body with the literal text ${def.tag} on its own line.${mentionSuffix()}`,
-    { agentType: def.agentType, phase: def.label },
-  );
+  const tagInstruction = def.initialArtifactIsPrBody
+    ? ""
+    : ` Tag the posted comment's body with the literal text ${def.tag} on its own line.`;
+  await agent(`${def.kickoff(issue)}${tagInstruction}${mentionSuffix()}`, {
+    agentType: def.agentType,
+    phase: def.label,
+  });
 }
 
 async function postQaArtifact(issue, def) {
@@ -326,7 +403,7 @@ let label = await currentLabel(issue);
 // of the mode this run was invoked with.
 const gateDef = PHASE_DEFS.find((def) => def.gateLabel === label);
 if (gateDef) {
-  const comments = await commentsSinceTag(issue, gateDef.tag);
+  const comments = await commentsSinceTag(issue, gateDef);
   const directive = latestDirective(comments);
 
   if (!directive) {
@@ -342,7 +419,7 @@ if (gateDef) {
       // report: route the feedback (and the QA report itself, for
       // full context) to the build agent, then re-run QA and re-post
       // at the same gate rather than re-reviewing QA's own writeup.
-      const postGateComments = await commentsSinceTag(issue, gateDef.tag);
+      const postGateComments = await commentsSinceTag(issue, gateDef);
       const lastReport = [...postGateComments].reverse().find((c) => (c.body ?? "").includes("QA-VERDICT:"));
       phase("Build");
       await fixupBuild(issue, buildDef, `${lastReport?.body ?? ""}\n\nAdditional human feedback: ${directive.feedback}`);
@@ -359,7 +436,7 @@ if (gateDef) {
 
   // directive.kind === "approve"
   if (gateDef.key === "qa") {
-    const postGateComments = await commentsSinceTag(issue, gateDef.tag);
+    const postGateComments = await commentsSinceTag(issue, gateDef);
     const verdictComment = [...postGateComments].reverse().find((c) => (c.body ?? "").includes("QA-VERDICT:"));
     const approved = (verdictComment?.body ?? "").includes("QA-VERDICT: approved");
     await transitionTo(issue, approved ? "status:human-review" : "status:in-progress");
@@ -421,7 +498,7 @@ for (const def of PHASE_DEFS) {
   // with. Re-inspect the actual posted comment rather than trust the
   // agent's own summary of what it wrote.
   if (def.key === "spec" || def.key === "plan") {
-    const posted = await fetchTaggedComment(issue, def.tag);
+    const posted = await fetchTaggedComment(issue, def);
     if (posted.includes("[NEEDS CLARIFICATION]")) {
       await transitionTo(issue, def.gateLabel);
       log(

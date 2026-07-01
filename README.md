@@ -49,14 +49,23 @@ run the openducktor-issue workflow on issue 142 in manual mode
 
 or programmatically: `Workflow({ scriptPath: ".claude/workflows/openducktor-issue.js", args: { issueNumber: 142, mode: "auto" } })`. The `/openducktor-issue 142` slash-command form always runs in auto mode, since a slash command only passes a bare string as `args`.
 
+### Spec and plan live on the issue; build and QA live on the pull request
+
+Spec and plan are posted (and, in manual mode, gated) as tagged comments on the issue, since no pull request exists yet at that point. Build and QA are posted on the pull request instead, which is what QA and any human review actually looks at:
+
+- The build phase's initial completion summary is the pull request's own body/description (`gh pr edit --body`), not a comment, since it's naturally "what this PR does." Every later round on that phase, a QA-rejection fixup or a human `/revise` at the build gate, replies as an ordinary pull request comment instead of re-editing the body.
+- The QA phase's report is always a tagged pull request comment, revised in place on a human `/revise`, the same way spec/plan comments are.
+
+The workflow has no memory of the pull request number across runs. Every read against the pull request (comments, gate directives, the QA verdict) re-derives it via `findLinkedPr()`, a GraphQL lookup of the PR(s) GitHub already considers linked to the issue (the same mechanism that resolves `Closes #N`), rather than trusting a number an earlier run happened to learn.
+
 ### Auto mode versus manual mode
 
 **Auto mode** runs straight through: each phase's agent posts its artifact, the transition script immediately advances the label, and the next phase starts in the same invocation, ending at a QA verdict.
 
-**Manual mode** stops after every phase. The phase's artifact comment is posted, tagged with a hidden `<!-- odt:<phase> -->` marker, and the issue is set to a `status:<phase>-awaiting-approval` gate label. The run ends there. A human reviews the artifact on the issue and comments:
+**Manual mode** stops after every phase. The phase's artifact is posted (a tagged issue comment for spec/plan, the pull request body for build's first pass, a tagged pull request comment for QA), and the issue is set to a `status:<phase>-awaiting-approval` gate label. The run ends there. A human reviews the artifact where it was posted and comments:
 
 - `/approve`, to advance past the gate. Re-running the workflow (same issue, same or no mode argument) picks this up, performs the real transition, and continues into the next phase, which stops at its own gate in turn.
-- `/revise <feedback>`, to send that feedback back into the same phase's agent. The agent edits the existing tagged comment in place (it does not post a second copy) and replies summarizing what changed. The issue stays at the same gate, awaiting another `/approve` or `/revise`.
+- `/revise <feedback>`, to send that feedback back into the same phase's agent. For spec, plan, and QA, the agent edits the existing tagged comment in place (it does not post a second copy) and replies summarizing what changed. For build, the agent replies with a pull request comment instead of re-editing the body, and does not post a second completion summary. The issue stays at the same gate, awaiting another `/approve` or `/revise`.
 
 Re-running the workflow with no `/approve` or `/revise` comment since the gate was set is always safe: it reports "waiting for review" and exits without touching anything.
 
@@ -115,5 +124,4 @@ Manual mode adds four gate labels to the same table, one per phase: `status:spec
 - No worktree isolation between build and QA by default. Pass `isolation: "worktree"` to the build-agent call in the workflow script if agents run concurrently and might collide.
 - The QA verdict is a `QA-VERDICT: approved|rejected` string convention read out of the agent's final text, not a typed tool call. Passing a `schema` to that `agent()` call would remove the string-matching risk.
 - No cross-task or cross-issue coherence check. Each issue is planned and built independently; nothing here detects two issues whose specs contradict each other. Neither does OpenDucktor's own state machine, beyond blocking an epic from closing while a subtask is still open.
-- No canonical task-summary object. Every agent re-reads the full issue thread via `gh issue view --comments` instead of a cached document-presence summary.
-- The QA report and build completion summary live on the issue thread rather than the pull request they actually describe. Spec and plan have to live on the issue (no PR exists yet at that point), but build/QA arguably belong on the PR's own review thread. Not yet changed, since it would also mean scoping `/approve` and `/revise` detection to two different comment streams instead of one.
+- No canonical task-summary object. Every agent re-reads the full issue thread (or, for build/QA, the pull request thread) via `gh issue view --comments` / `gh pr view --json comments` instead of a cached document-presence summary.
