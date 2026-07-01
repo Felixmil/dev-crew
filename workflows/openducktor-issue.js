@@ -139,14 +139,37 @@ async function transitionTo(issue, to) {
 // status:open and apply the label, so the issue's actual state
 // matches what this workflow believes from here on, rather than
 // silently diverging the way a missing status:closed label did.
+//
+// The gh command legitimately produces no stdout when the issue has
+// no status:* label. A plain-text agent call asked to "return only
+// that label string" can narrate the empty result instead ("the
+// command completed with no output") rather than return an empty
+// string, and that prose would otherwise be mistaken for a real
+// label and silently stall the whole workflow. Forcing a schema and
+// then extracting a genuine status:* token defensively (instead of
+// trusting the field verbatim) closes that gap structurally.
 async function currentLabel(issue) {
-  const raw = await agent(
-    `Run: gh issue view ${issue} --json labels --jq '.labels[].name | select(startswith("status:"))'. Return only that label string.`,
-    { label: "read-label" },
+  const out = await agent(
+    `Run: gh issue view ${issue} --json labels --jq '.labels[].name | select(startswith("status:"))'. ` +
+      `Set statusLabel to the exact status:* label from stdout, or "" if stdout was empty.`,
+    {
+      label: "read-label",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["statusLabel"],
+        properties: {
+          statusLabel: {
+            type: "string",
+            description: 'The status:* label, e.g. "status:open", or "" if there is none.',
+          },
+        },
+      },
+    },
   );
-  const trimmed = raw.trim();
-  if (trimmed) {
-    return trimmed;
+  const match = String(out?.statusLabel ?? "").match(/status:[A-Za-z0-9._-]+/);
+  if (match) {
+    return match[0];
   }
   await agent(`Run: gh issue edit ${issue} --add-label status:open`, { label: "seed-open-label" });
   return "status:open";
