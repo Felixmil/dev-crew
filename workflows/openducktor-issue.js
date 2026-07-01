@@ -7,7 +7,8 @@
 // Run with:
 //   Workflow({ scriptPath: ".claude/workflows/openducktor-issue.js", args: { issueNumber: 142, mode: "auto" } })
 //   Workflow({ scriptPath: ".claude/workflows/openducktor-issue.js", args: { issueNumber: 142, mode: "manual" } })
-// or as a slash command: /openducktor-issue 142 (bare string args always run in auto mode)
+// or as a slash command: /openducktor-issue 142 (auto mode)
+//                     or: /openducktor-issue 142 manual (manual mode)
 //
 // auto mode: identical to the original script. Every phase's output
 // is immediately approved and the pipeline runs straight through to
@@ -217,17 +218,28 @@ async function revise(issue, def, feedback) {
   return null;
 }
 
-const issueArg = typeof args === "object" && args !== null ? args.issueNumber : args;
-const mode = (typeof args === "object" && args !== null ? args.mode : undefined) ?? "auto";
-if (!issueArg) {
+// args arrives as one of:
+//   { issueNumber: 142, mode: "auto" | "manual" }   (programmatic Workflow() call)
+//   142                                              (bare number)
+//   "142"                                            (slash command, no mode word)
+//   "142 manual"                                     (slash command, with a mode word)
+function parseArgs(rawArgs) {
+  if (typeof rawArgs === "object" && rawArgs !== null) {
+    return { issue: rawArgs.issueNumber, mode: rawArgs.mode ?? "auto" };
+  }
+  const tokens = String(rawArgs ?? "").trim().split(/\s+/).filter(Boolean);
+  return { issue: tokens[0], mode: tokens[1] ?? "auto" };
+}
+
+const { issue, mode } = parseArgs(args);
+if (!issue) {
   throw new Error(
-    'Missing issue number. Pass args: { issueNumber: N, mode: "auto" | "manual" } or invoke as "/openducktor-issue N" (auto mode).',
+    'Missing issue number. Pass args: { issueNumber: N, mode: "auto" | "manual" }, or invoke as "/openducktor-issue N" or "/openducktor-issue N manual".',
   );
 }
 if (mode !== "auto" && mode !== "manual") {
   throw new Error(`Unknown mode "${mode}". Use "auto" or "manual".`);
 }
-const issue = issueArg;
 
 const buildDef = PHASE_DEFS.find((def) => def.key === "build");
 const qaDef = PHASE_DEFS.find((def) => def.key === "qa");
