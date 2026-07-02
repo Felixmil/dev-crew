@@ -10,6 +10,8 @@ agents/                  four Claude Code subagent definitions (plugin-installab
   planner-agent.md
   build-agent.md
   qa-agent.md
+skills/
+  refine-issue/          /refine-issue N: interrogate a raw issue before spec work starts
 workflows/
   openducktor-issue.js   drives one issue through spec -> plan -> build -> qa
 .claude/scripts/
@@ -107,6 +109,17 @@ Spec and plan revisions (`/revise <feedback>` or a resolved `[NEEDS CLARIFICATIO
 ### Agent type names are plugin-prefixed
 
 Once installed via a plugin, the four agents are not registered as `spec-agent`, `planner-agent`, `build-agent`, `qa-agent`. They're namespaced as `openducktor-agents:spec-agent`, `openducktor-agents:planner-agent`, `openducktor-agents:build-agent`, `openducktor-agents:qa-agent`, to avoid colliding with same-named agents from other plugins or from a project's own `.claude/agents/`. `workflows/openducktor-issue.js` already uses the prefixed names. If you write your own workflow or call these agents directly, use the prefixed form; the bare name will fail with an "agent type not found" error listing the actual registered names.
+
+## refine-issue: a skill, not a pipeline step
+
+`skills/refine-issue/SKILL.md` interrogates a raw issue against the actual codebase before spec work starts, invoked yourself as `/refine-issue <issue-number>`. It is not wired into `workflows/openducktor-issue.js` and never runs automatically; the pipeline's spec phase has no dependency on it and no gate waits for it.
+
+It looks for two distinct kinds of problems in the same pass spec-agent would otherwise absorb silently or ask about too late:
+
+- **Open questions**, genuine ambiguity only a human can resolve, asked one at a time with a recommended default, the same discipline `spec-agent.md` already uses.
+- **Contradictions and incompatibilities**, places where the issue's ask conflicts with, duplicates, or cannot coexist with something the codebase already does, established with direct repo evidence (a file, a function, a test), stated as a finding rather than framed as a question.
+
+It posts a single issue comment and touches nothing else: no labels, no spec, no title/body edits. It deliberately does not use the `[NEEDS CLARIFICATION]` marker `spec-agent`/`planner-agent` use to gate the pipeline; its output is advisory, read by a human, not scanned by `workflows/openducktor-issue.js`.
 
 ## The state machine
 
