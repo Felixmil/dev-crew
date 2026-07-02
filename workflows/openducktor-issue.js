@@ -322,43 +322,38 @@ async function commentsSinceTag(issue, def) {
   return Array.isArray(out?.comments) ? out.comments : [];
 }
 
-// The current body of the comment tagged with `tag` at def's comment
-// target, or "" if no such comment exists. Used to inspect what an
-// agent actually posted rather than trust its own summary of what it
-// did. Only meaningful for phases whose artifact is a tagged comment
-// (spec, plan, qa); the build phase's initial artifact is the PR
-// body, not a tagged comment, so this is never called for it.
-async function fetchTaggedComment(issue, def) {
+// Whether the comment tagged with `tag` at def's comment target
+// contains a genuine open [NEEDS CLARIFICATION] marker (the literal
+// text starting a line, not just mentioned in prose). Only meaningful
+// for phases whose artifact is a tagged comment (spec, plan); the
+// build phase's initial artifact is the PR body, not a tagged
+// comment, so this is never called for it.
+//
+// The marker check runs entirely inside jq, not the agent: an earlier
+// version returned the whole comment body through the agent's
+// structured output so the caller could inspect it, but that meant a
+// several-thousand-word spec or plan got regenerated in full as
+// output tokens just to answer a yes/no question. Only the boolean
+// result crosses the tool-call boundary now.
+async function commentHasOpenClarificationMarker(issue, def) {
   const source = await commentSource(issue, def);
   if (!source.ok) {
-    return "";
+    return false;
   }
-  const jq = `[.comments[] | select(.body | contains("${def.tag}"))] | last | .body // ""`;
-  const out = await agent(
-    `Run exactly: gh ${source.target} --json comments --jq '${jq}'. Set body to that raw stdout, or "" if stdout was empty.`,
-    {
-      label: "read-tagged-comment",
-      model: "haiku",
-      schema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["body"],
-        properties: { body: { type: "string" } },
-      },
+  const jq =
+    `[.comments[] | select(.body | contains("${def.tag}"))] | last | (.body // "") | ` +
+    `split("\\n") | any(startswith("[NEEDS CLARIFICATION]"))`;
+  const out = await agent(`Run exactly: gh ${source.target} --json comments --jq '${jq}'. Set hasMarker to that raw stdout parsed as a boolean.`, {
+    label: "read-tagged-comment-marker",
+    model: "haiku",
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["hasMarker"],
+      properties: { hasMarker: { type: "boolean" } },
     },
-  );
-  return String(out?.body ?? "");
-}
-
-// True only for a genuine open marker: the literal text must start a
-// line. A bare substring check also matches prose that mentions the
-// marker without raising one, e.g. a plan's own closing summary
-// "No open [NEEDS CLARIFICATION] items", which is the negation of an
-// open question, not one. spec-agent and planner-agent are both told
-// to only ever write the marker at the start of a line for a real
-// open item, and never reference it in running prose otherwise.
-function hasOpenClarificationMarker(body) {
-  return /^\[NEEDS CLARIFICATION\]/m.test(body ?? "");
+  });
+  return Boolean(out?.hasMarker);
 }
 
 function latestDirective(comments) {
@@ -508,8 +503,7 @@ if (gateDef) {
   if (clarificationAnswer && (gateDef.key === "spec" || gateDef.key === "plan")) {
     phase("Revise");
     await revise(issue, gateDef, clarificationAnswer, { isClarificationAnswer: true });
-    const revised = await fetchTaggedComment(issue, gateDef);
-    if (hasOpenClarificationMarker(revised)) {
+    if (await commentHasOpenClarificationMarker(issue, gateDef)) {
       log(
         `Issue ${issue} ${gateDef.key} still contains [NEEDS CLARIFICATION] after the answer; ` +
           `remains at ${label} for another /revise or clarificationAnswer.`,
@@ -619,8 +613,7 @@ for (const def of PHASE_DEFS) {
   // with. Re-inspect the actual posted comment rather than trust the
   // agent's own summary of what it wrote.
   if (def.key === "spec" || def.key === "plan") {
-    const posted = await fetchTaggedComment(issue, def);
-    if (hasOpenClarificationMarker(posted)) {
+    if (await commentHasOpenClarificationMarker(issue, def)) {
       await transitionTo(issue, def.gateLabel);
       log(
         `Issue ${issue} ${def.key} posted with an unresolved [NEEDS CLARIFICATION] marker; ` +
