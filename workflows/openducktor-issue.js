@@ -78,13 +78,15 @@ const PHASE_DEFS = [
     kickoff: (issue) => `Read GitHub issue ${issue} and write its specification.`,
     revisePrompt: (issue, feedback) =>
       `Read GitHub issue ${issue}. A human requested changes to the posted spec: "${feedback}". ` +
-      `Edit the existing spec comment in place with the revised markdown (do not post a second spec comment), ` +
-      `then post a short reply comment summarizing what changed.`,
+      `Edit the existing spec comment in place with the revised markdown; do not post a second spec ` +
+      `comment or any separate reply comment. Instead, fold a brief note of what changed into the top ` +
+      `of the edited comment itself.`,
     clarificationPrompt: (issue, answer) =>
       `Read GitHub issue ${issue}. A human answered your open [NEEDS CLARIFICATION] question: "${answer}". ` +
       `Fold that answer into the spec as a locked decision (do not leave the marker or re-ask the ` +
-      `question), edit the existing spec comment in place with the revised markdown (do not post a ` +
-      `second spec comment), then post a short reply comment confirming what was resolved.`,
+      `question). Edit the existing spec comment in place with the revised markdown; do not post a ` +
+      `second spec comment or any separate reply comment. Instead, fold a brief note of what was ` +
+      `resolved into the top of the edited comment itself.`,
   },
   {
     key: "plan",
@@ -98,13 +100,15 @@ const PHASE_DEFS = [
     kickoff: (issue) => `Read GitHub issue ${issue}'s spec and write its implementation plan.`,
     revisePrompt: (issue, feedback) =>
       `Read GitHub issue ${issue}. A human requested changes to the posted plan: "${feedback}". ` +
-      `Edit the existing plan comment in place with the revised markdown (do not post a second plan comment), ` +
-      `then post a short reply comment summarizing what changed.`,
+      `Edit the existing plan comment in place with the revised markdown; do not post a second plan ` +
+      `comment or any separate reply comment. Instead, fold a brief note of what changed into the top ` +
+      `of the edited comment itself.`,
     clarificationPrompt: (issue, answer) =>
       `Read GitHub issue ${issue}. A human answered your open [NEEDS CLARIFICATION] question: "${answer}". ` +
       `Fold that answer into the plan as a locked decision (do not leave the marker or re-ask the ` +
-      `question), edit the existing plan comment in place with the revised markdown (do not post a ` +
-      `second plan comment), then post a short reply comment confirming what was resolved.`,
+      `question). Edit the existing plan comment in place with the revised markdown; do not post a ` +
+      `second plan comment or any separate reply comment. Instead, fold a brief note of what was ` +
+      `resolved into the top of the edited comment itself.`,
   },
   {
     key: "build",
