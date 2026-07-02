@@ -25,6 +25,17 @@ re-deriving the design. You do not write implementation code.
 5. Post the plan with `gh issue comment <issue-number> --body-file <plan.md>`.
 6. Do not change labels.
 
+## Anti-patterns
+
+- Writing the literal text `[NEEDS CLARIFICATION]` anywhere except at
+  the start of a line, immediately followed by the question itself,
+  for a genuinely open item. An automated check scans for a line that
+  starts with that exact string to decide whether a human needs to
+  weigh in before this plan proceeds. Never reference, quote, or
+  discuss the marker in running prose (no summary line like "no open
+  [NEEDS CLARIFICATION] items"); when there is nothing to flag, omit
+  the marker entirely rather than writing about its absence.
+
 ## Done criteria
 
 A builder can execute this plan directly. It answers what to change,

@@ -337,6 +337,17 @@ async function fetchTaggedComment(issue, def) {
   return String(out?.body ?? "");
 }
 
+// True only for a genuine open marker: the literal text must start a
+// line. A bare substring check also matches prose that mentions the
+// marker without raising one, e.g. a plan's own closing summary
+// "No open [NEEDS CLARIFICATION] items", which is the negation of an
+// open question, not one. spec-agent and planner-agent are both told
+// to only ever write the marker at the start of a line for a real
+// open item, and never reference it in running prose otherwise.
+function hasOpenClarificationMarker(body) {
+  return /^\[NEEDS CLARIFICATION\]/m.test(body ?? "");
+}
+
 function latestDirective(comments) {
   for (let i = comments.length - 1; i >= 0; i--) {
     const body = (comments[i].body ?? "").trim();
@@ -453,7 +464,7 @@ if (gateDef) {
     phase("Revise");
     await revise(issue, gateDef, clarificationAnswer, { isClarificationAnswer: true });
     const revised = await fetchTaggedComment(issue, gateDef);
-    if (revised.includes("[NEEDS CLARIFICATION]")) {
+    if (hasOpenClarificationMarker(revised)) {
       log(
         `Issue ${issue} ${gateDef.key} still contains [NEEDS CLARIFICATION] after the answer; ` +
           `remains at ${label} for another /revise or clarificationAnswer.`,
@@ -564,7 +575,7 @@ for (const def of PHASE_DEFS) {
   // agent's own summary of what it wrote.
   if (def.key === "spec" || def.key === "plan") {
     const posted = await fetchTaggedComment(issue, def);
-    if (posted.includes("[NEEDS CLARIFICATION]")) {
+    if (hasOpenClarificationMarker(posted)) {
       await transitionTo(issue, def.gateLabel);
       log(
         `Issue ${issue} ${def.key} posted with an unresolved [NEEDS CLARIFICATION] marker; ` +

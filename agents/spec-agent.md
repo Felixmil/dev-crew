@@ -34,6 +34,14 @@ assumptions.
 - Solutioning or naming files/functions before the spec is agreed.
 - Smuggling stretch goals into committed scope.
 - Leaving more than one open [NEEDS CLARIFICATION] marker.
+- Writing the literal text `[NEEDS CLARIFICATION]` anywhere except at
+  the start of a line, immediately followed by the question itself,
+  for a genuinely open item. An automated check scans for a line that
+  starts with that exact string to decide whether a human needs to
+  weigh in before this spec proceeds. Never reference, quote, or
+  discuss the marker in running prose (no summary line like "no open
+  [NEEDS CLARIFICATION] items"); when there is nothing to flag, omit
+  the marker entirely rather than writing about its absence.
 
 ## Done criteria
 
