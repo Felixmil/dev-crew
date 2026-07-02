@@ -195,12 +195,28 @@ or a dependency is missing), do this in exactly this order:
    text emitted just before an `AskUserQuestion` call can be dropped in
    a background session, so a self-contained question is the only kind
    that survives.
-3. **On the answer: clear `pendingQuestion` to `null`**, then fold the
+3. **If no answer comes back** (the prompt timed out, returned a "no
+   response" / "proceed on best judgment" signal, or otherwise came back
+   empty): **do not guess and do not proceed on a default.** Stop the
+   run cleanly, leaving `pendingQuestion` set exactly as written in step
+   1 and `status` unchanged. A later re-run re-asks the exact question
+   (see the resume section) and picks up from there. `AskUserQuestion`
+   has a fixed ~60s timeout after which the model is told to continue on
+   its own judgment, and in a background session the prompt may not
+   surface at all; treating either as "no answer, stop" is what keeps a
+   real spec/plan/gate decision from being silently steamrolled by a
+   default no human ever saw. The only exception is `auto` mode, which by
+   design raises no question in the first place (the agent adopts its own
+   recommended default and records it in the artifact), so there is
+   nothing here to time out.
+4. **On the answer: clear `pendingQuestion` to `null`**, then fold the
    answer into the next action.
 
 Because artifacts are written only after every question is answered,
 the answer always flows into the agent (or the gate/dependency branch),
-never into a half-written file. There is nothing to reconcile.
+never into a half-written file. There is nothing to reconcile. And
+because the question is persisted before it is asked, a timeout or a
+non-surfacing background prompt loses nothing: the next run re-asks it.
 
 ## Modes: two orthogonal axes
 
@@ -284,6 +300,11 @@ merge.
   non-zero as a hard error.
 - Prompting before persisting `pendingQuestion`. Persist first, always,
   so a killed session re-asks the exact question.
+- Proceeding on a default when a question went unanswered (a timeout, a
+  "proceed on best judgment" signal, or a background prompt that never
+  surfaced). Stop with `pendingQuestion` still set and `status`
+  unchanged; let a re-run re-ask it. Only `auto` mode may adopt a
+  default, and only because it raised no question to begin with.
 - Trusting session memory for "where am I". Read `state.json.status`
   and `pendingQuestion` every run.
 - Posting anything to the issue thread, or adding a bookkeeping comment
