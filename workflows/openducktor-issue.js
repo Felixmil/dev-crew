@@ -396,11 +396,20 @@ async function fixupBuild(issue, buildDef, qaReport) {
 async function revise(issue, def, feedback, { isClarificationAnswer = false } = {}) {
   const promptBuilder = isClarificationAnswer ? def.clarificationPrompt : def.revisePrompt;
   const prompt = `${promptBuilder(issue, feedback)}${mentionSuffix()}`;
+  // Spec and plan revisions are editorial: read feedback, edit markdown
+  // in place. Build revisions still write real code changes (see its
+  // revisePrompt), so only spec/plan get the cheaper model here; this
+  // function is never actually reached for QA (see the caller, which
+  // routes a QA-gate /revise to fixupBuild instead).
+  const opts =
+    def.key === "spec" || def.key === "plan"
+      ? { agentType: def.agentType, phase: "Revise", model: "sonnet" }
+      : { agentType: def.agentType, phase: "Revise" };
   if (def.key === "qa") {
-    const report = await agent(prompt, { agentType: def.agentType, phase: "Revise" });
+    const report = await agent(prompt, opts);
     return { verdict: report.includes("QA-VERDICT: approved") ? "approved" : "rejected", report };
   }
-  await agent(prompt, { agentType: def.agentType, phase: "Revise" });
+  await agent(prompt, opts);
   return null;
 }
 
