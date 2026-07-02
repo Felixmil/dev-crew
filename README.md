@@ -4,19 +4,34 @@ Spec, planner, build, and QA subagents modeled on [OpenDucktor](https://github.c
 
 ## What's here
 
+This repo ships two coexisting ways to drive an issue through spec -> plan -> build -> QA. They share nothing at runtime and neither modifies the other; pick per issue.
+
 ```
-agents/                  four Claude Code subagent definitions (plugin-installable)
-  spec-agent.md
+agents/                            eight Claude Code subagent definitions (plugin-installable)
+  spec-agent.md                    the gh-posting pipeline: post artifacts to the issue/PR thread
   planner-agent.md
   build-agent.md
   qa-agent.md
+  spec-writer-agent.md             the file-based pipeline: write artifacts to <repo>.issues/<n>/
+  plan-writer-agent.md
+  build-runner-agent.md
+  qa-review-agent.md
 skills/
-  refine-issue/          /refine-issue N: interrogate a raw issue before spec work starts
+  refine-issue/                    /refine-issue N: interrogate a raw issue before spec work starts
+  issue-pipeline/                  /issue-pipeline N [mode]: file-based, in-session, resumable pipeline
 workflows/
-  openducktor-issue.js   drives one issue through spec -> plan -> build -> qa
+  openducktor-issue.js             the gh-posting pipeline: drives one issue, artifacts on GitHub
 .claude/scripts/
-  odt-transition.sh      the only thing allowed to write an issue's status:* label
+  odt-transition.sh                gh-posting pipeline: the only thing allowed to write status:* labels
+  issue-state-transition.sh        file-based pipeline: the only thing allowed to write state.json.status
 ```
+
+Two pipelines, two philosophies:
+
+- **The gh-posting pipeline** (`workflows/openducktor-issue.js` + the four `*-agent` subagents + `odt-transition.sh`) keeps state in the issue's `status:*` labels and posts every artifact to the issue or pull request thread. Documented from "Two different installation paths" onward.
+- **The file-based pipeline** (`skills/issue-pipeline/` + the four `*-writer`/`*-runner`/`*-review` subagents + `issue-state-transition.sh`) keeps state in a local `state.json`, writes every artifact to the local filesystem under `<repo>.issues/<issue>/`, and asks every question inline in the running session. The GitHub issue is only the input; a pull request is only the ship channel; nothing is posted to the issue thread. Documented under "The file-based pipeline" below.
+
+The two are fully additive: installing or running one never touches the other, and the same issue could in principle be driven by either (though not both at once, since they track state in different places).
 
 ## Two different installation paths
 
@@ -123,6 +138,84 @@ It looks for two distinct kinds of problems in the same pass spec-agent would ot
 
 Once everything is resolved, it edits the issue's own body in place (`gh issue edit --body`), never posts a comment for this. The original description stays untouched at the top; a single `<!-- odt:refinement -->`-tagged section below it records the resolved decisions and reconciled contradictions, replaced in place on a re-run rather than duplicated. If there is nothing to report, it says so in conversation and does not touch the issue at all. It deliberately does not use the `[NEEDS CLARIFICATION]` marker `spec-agent`/`planner-agent` use to gate the pipeline; nothing it writes is ever an open question for `workflows/openducktor-issue.js` to scan for.
 
+## The file-based pipeline
+
+`skills/issue-pipeline/SKILL.md` drives one issue through the same spec -> plan -> build -> QA sequence, but keeps everything local. Invoke it yourself as `/openducktor-agents:issue-pipeline <issue> [mode]` (this README writes it as the shorthand `/issue-pipeline`; both resolve to the same skill). It runs in your session's own context, so it reads and writes files directly and asks every question inline via a multiple-choice prompt; it spawns the four file-writing agents for the heavy per-phase work and hands each one concrete filesystem paths.
+
+The GitHub issue is only the input, and a pull request is only the ship channel. Nothing is ever posted to the issue thread, and no bookkeeping comment is added to the pull request. The four artifacts, the state machine, and every human question all live on the local filesystem and in the running session.
+
+### One plugin install, one file copy
+
+Everything the plugin can distribute (the skill and the four agents) ships with the plugin and is auto-discovered on install, with no per-repo copying:
+
+```
+/plugin marketplace add ~/Code/openducktor-agents
+/plugin install openducktor-agents@openducktor-agents
+```
+
+After that, `/openducktor-agents:issue-pipeline` and the four agents (`openducktor-agents:spec-writer-agent`, `openducktor-agents:plan-writer-agent`, `openducktor-agents:build-runner-agent`, `openducktor-agents:qa-review-agent`) are available in every project. Scripts are not plugin-discoverable, so the one remaining step is to copy the transition script into each target repo:
+
+```
+mkdir -p <target-repo>/.claude/scripts
+cp .claude/scripts/issue-state-transition.sh <target-repo>/.claude/scripts/
+chmod +x <target-repo>/.claude/scripts/issue-state-transition.sh
+```
+
+That is one plugin install plus a one-file copy, simpler than the gh-posting pipeline's two-path (copy the workflow and the script) install, because there the workflow itself has to be copied too.
+
+### The `<repo>.issues/` layout
+
+State lives next to the repo, never inside it. The skill derives the root from git: a repo whose working tree is at `~/Code/esqlabsR` gets a state root of `~/Code/esqlabsR.issues`, and each issue gets a folder under it:
+
+```
+~/Code/esqlabsR.issues/
+  142/
+    state.json    the pipeline state (see below); the only file whose "status" is gated
+    spec.md       written by spec-writer-agent
+    plan.md       written by plan-writer-agent
+    build.md      the fuller build summary (a different, fuller document than the PR body)
+    qa.md         the QA report, ending in one "QA-VERDICT: approved|rejected" line
+```
+
+A file's *absence* means that phase has not produced its artifact yet. None of these files, nor `state.json`, is ever `git add`ed or posted to GitHub; they sit outside the repo tree by construction. All worktrees of one repo share a single `<repo>.issues` root, so an issue's state is the same wherever you drive it from.
+
+`state.json` records the current bare `status` (no `status:` prefix), the `mode`, the linked `prNumber` (a cache, always re-derived fresh before it is trusted), the last `qaVerdict`, a `pendingQuestion` (the sole record of an open question), and a `dependsOn` list. There is no `[NEEDS CLARIFICATION]` marker anywhere: an open question lives only in `state.json.pendingQuestion`, and an artifact is written only after every question is answered, so a run stopped mid-question leaves no partial artifact, only the persisted question.
+
+### Three modes on two orthogonal axes
+
+Mode is `auto`, `semi-auto` (the default when no mode word is given), or `manual`. Two independent decisions are gated separately:
+
+- **Questions axis** (does an agent's raised ambiguity get surfaced?): `auto` never surfaces one; the agent is told to adopt its own recommended default and record that decision in the artifact. `semi-auto` and `manual` surface a genuine ambiguity inline as a multiple-choice question.
+- **Artifact-approval axis** (does the skill stop after writing an artifact?): `auto` and `semi-auto` auto-approve and advance immediately. `manual` stops after every phase for an inline approve/revise decision; `revise` re-runs that phase's agent with the feedback and re-writes the artifact in place, `approve` advances.
+
+The axes are genuinely orthogonal: a spec with no question in `semi-auto` still auto-approves, while the same spec in `manual` still stops for approval even though no question was raised. A bare `/issue-pipeline 142` runs `semi-auto`: it surfaces a real ambiguity but auto-approves clean artifacts.
+
+The QA-gate `revise` (in `manual`) routes the feedback plus the current `qa.md` to the build agent, not back to QA, since QA's rejection reasoning belongs in the code. In `auto`/`semi-auto`, a QA rejection loops back into build automatically, up to three total build attempts, before leaving the issue at `in-progress` for a human.
+
+### Resumability: the question survives the session
+
+Where the pipeline is is always read from `state.json` (`status` plus `pendingQuestion`), never from what the session remembers. Every question is persisted to `state.json.pendingQuestion` *before* it is asked, and cleared only once answered. So a killed, slept, or closed session loses nothing: the very first thing a re-run does, before touching any phase, is re-ask whatever question `pendingQuestion` holds, then route the answer as if it had just been raised. Because artifacts are written only after questions are answered, there is never a half-written file to reconcile.
+
+One design rule follows from how background sessions handle inline questions: **the skill never prints decision context as prose before asking**; everything the human needs lives inside the question and its options. Text emitted just before an inline question can be dropped in a background session, so a self-contained question is the only kind that reliably survives.
+
+### `dependsOn`: read-only, one-directional
+
+`state.json.dependsOn` is a list of issue numbers this issue may read from, one-directionally. Set it explicitly (by hand at dispatch, or by writing the field); it is never auto-derived. When it is set, the skill hands the phase agents the depended-on issues' `spec.md`/`plan.md` as read-only paths, and hands them no other issue's paths; when it is empty, no other-issue path is passed at all. One-directionality is structural: issue 142's agent is simply never told where 143 could be written. If a depended-on issue's artifacts do not exist yet when they would be read, the skill asks (proceed without the missing dependency, recommended, or wait) rather than silently proceeding or hard-blocking.
+
+### A fleet is several background sessions
+
+There is no multi-issue launcher in this skill; it drives exactly one issue. A "fleet" is simply several `/issue-pipeline` runs dispatched as independent background sessions, each its own full Claude Code conversation with its own agent-view row. A question in one shows as "Needs input" and is answerable inline from agent view without affecting the others.
+
+Because a background session can currently mishandle an inline question (dropping pre-question text, or not stopping at the question in fully headless mode), a practical recommendation until those reports resolve: **run `manual` and `semi-auto` issues in the foreground**, where inline questions are unaffected, and reserve **background dispatch for `auto` runs**, which never prompt. This is guidance, not an enforced requirement; the self-contained-question rule and the persist-before-asking recovery path make background inline answering safe enough that nothing in the skill forbids it.
+
+### merge (terminal action)
+
+`/issue-pipeline 142 merge` is a standalone terminal action, not a pipeline mode; neither `auto` nor `manual` ever calls it. It refuses unless the issue is at `human-review`, then squash-merges the linked pull request (`gh pr merge --squash --delete-branch`) and transitions the issue to `closed`.
+
+### Coexistence with the gh-posting pipeline
+
+The file-based pipeline neither reads nor writes anything the gh-posting pipeline uses, and vice versa. It never touches `status:*` labels (its state is in `state.json`), never posts to the issue thread, and forks its four agents from the originals without modifying them. `workflows/openducktor-issue.js`, `odt-transition.sh`, the four `*-agent` subagents, and `refine-issue` are all left exactly as they were. The only place the "OpenDucktor"/"odt" name survives in the new files is a lineage comment in `issue-state-transition.sh` citing the source of the transition table.
+
 ## The state machine
 
 `.claude/scripts/odt-transition.sh` enforces the same transition table as OpenDucktor's `status-transition-policy.ts`:
@@ -142,9 +235,17 @@ Manual mode adds four gate labels to the same table, one per phase: `status:spec
 
 ## Target repo prerequisites
 
+### gh-posting pipeline
+
 - `gh` CLI authenticated against the repo.
 - Labels created: `status:open`, `status:spec-ready`, `status:ready-for-dev`, `status:in-progress`, `status:blocked`, `status:ai-review`, `status:human-review`, `status:closed`, plus `type:task` / `type:bug` / `type:feature` / `type:epic` if you want the skip-spec shortcut to apply.
 - For manual mode: also create `status:spec-awaiting-approval`, `status:plan-awaiting-approval`, `status:build-awaiting-approval`, `status:qa-awaiting-approval`.
+
+### File-based pipeline
+
+- `gh` CLI authenticated against the repo.
+- `.claude/scripts/issue-state-transition.sh` copied into the repo (see "One plugin install, one file copy").
+- No `status:*` labels are needed. The state machine lives entirely in the local `state.json`, so there is nothing to create in the repo's label set, including none of the four `*-awaiting-approval` gates (those are `state.json` statuses here, not labels). The optional `type:task` / `type:bug` labels still enable the skip-spec shortcut, since that signal is read from GitHub; create them only if you want it.
 
 ## Known gaps versus OpenDucktor
 

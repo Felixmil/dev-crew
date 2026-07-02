@@ -1,7 +1,7 @@
 {
   "name": "openducktor-agents",
-  "description": "Spec, planner, build, and QA subagents modeled on OpenDucktor's agent workflow, coordinated against GitHub issue labels, plus a refine-issue skill for pre-spec codebase sanity checks",
-  "version": "0.2.0",
+  "description": "Spec, planner, build, and QA subagents modeled on OpenDucktor's agent workflow, coordinated against GitHub issue labels, plus a refine-issue skill and a file-based issue-pipeline skill that keeps state and artifacts on the local filesystem",
+  "version": "0.3.0",
   "author": {
     "name": "Felix Mil"
   },

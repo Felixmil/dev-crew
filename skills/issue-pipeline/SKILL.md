@@ -1,0 +1,308 @@
+---
+name: issue-pipeline
+description: Drives one GitHub issue through spec -> plan -> build -> QA, keeping the four artifacts and the state machine on the local filesystem under <repo>.issues/<issue>/ and all human interaction inline in this session. The GitHub issue is the input; a pull request is the ship channel; nothing is posted to the issue thread. Use when the user says "run the issue pipeline on N", "drive issue N through the pipeline", passes a mode (auto/semi-auto/manual/merge), or invokes /issue-pipeline with an issue number.
+---
+
+# Issue pipeline
+
+You drive one GitHub issue through spec -> plan -> build -> QA. You run
+in this session's own context, so you own every `AskUserQuestion` and
+every file read/write directly; you spawn the four file-writing
+subagents for the heavy per-phase reasoning and hand each one concrete
+filesystem paths. The four artifacts (`spec.md`, `plan.md`, `build.md`,
+`qa.md`), the state (`state.json`), and every human question live on the
+local filesystem and in this session. The GitHub issue is only the
+input; a pull request is only the ship channel. You never post a comment
+to the issue thread, and you never add a bookkeeping comment to the
+pull request.
+
+## Mission
+
+Take the issue from wherever `state.json` says it is to the next resting
+point, writing each phase's artifact to disk, advancing the state only
+through the single validated transition script, and surfacing every
+question inline in a way that survives the session being killed. Where
+you are is always read from `state.json`, never from what you remember
+of this conversation.
+
+## Setup (run once at the top of every invocation)
+
+1. **Parse the argument** as `<issue> [mode]`. `mode` is one of `auto`,
+   `semi-auto`, `manual`, or the terminal action `merge`. If no mode
+   word is given, default to `semi-auto` (but see step 4: a persisted
+   mode wins for a resume). Reject any other mode word loudly.
+2. **Derive the state root from git**, not from a hardcoded path:
+   - Run `git rev-parse --show-toplevel` to get the repo's working tree
+     root (an absolute path). Call its basename `<repo>` and its parent
+     directory `<parent>`.
+   - The state root is `<parent>/<repo>.issues`. Example: a repo at
+     `~/Code/esqlabsR` gives a state root of `~/Code/esqlabsR.issues`.
+   - The issue folder is `<root>/<issue>/`. The four artifacts and
+     `state.json` are siblings inside it.
+   - If you are inside a git worktree, `git rev-parse --show-toplevel`
+     still returns this worktree's root; use `git rev-parse
+     --git-common-dir` and resolve to the main checkout's directory name
+     if you need the canonical repo name, so all worktrees of one repo
+     share one `<repo>.issues` root.
+3. **Bootstrap the issue folder.** Create `<root>/<issue>/` if it does
+   not exist (`mkdir -p`). If `<root>/<issue>/state.json` does not exist,
+   seed it with `{"status": "open", "mode": "<mode>", "prNumber": null,
+   "qaVerdict": null, "pendingQuestion": null, "dependsOn": []}` (the
+   mode from step 1). Never `git add` this folder or any file in it;
+   it lives outside the repo tree by construction.
+4. **Reconcile mode.** If `state.json` already existed and the caller
+   passed no mode word, use the persisted `state.json.mode`. If the
+   caller passed a mode word, write it into `state.json.mode` (a rerun
+   may legitimately change the mode). `merge` is an action, not a
+   persisted mode; do not write `merge` into `state.json.mode`.
+5. **`merge` short-circuits everything below.** If the action is
+   `merge`, jump straight to the Merge section.
+
+## Resume a pending question first (before any phase)
+
+Immediately after loading `state.json`, before touching any phase:
+
+- If `state.json.pendingQuestion !== null`, **re-ask that exact
+  question first**. Rebuild the `AskUserQuestion` prompt from the
+  persisted `phase`, `question`, `options`, and `recommendedDefault`
+  (recommended option first). Do not print any context as prose before
+  the call; everything the human needs is inside the question and option
+  text.
+- On the answer: **clear `pendingQuestion` to `null`** in `state.json`,
+  then route the answer exactly as if it had just been raised (re-invoke
+  the phase agent with the answer folded into its instructions, or take
+  the gate's approve/revise branch, or the dependency's proceed/wait
+  branch, depending on the persisted `phase`). Then continue the phase
+  loop.
+
+A killed, slept, or closed session therefore loses nothing: the question
+survives in `state.json`, no artifact was written for it, and this
+re-ask is the recovery path.
+
+## The phase loop
+
+Read `state.json.status` and drive the phase whose entry status matches.
+The phases and their transition edges (all applied only through the
+transition script, see below):
+
+| Phase | Entry status | Agent | On success -> |
+| --- | --- | --- | --- |
+| spec  | `open` | `openducktor-agents:spec-writer-agent` | `spec-ready` |
+| plan  | `spec-ready` | `openducktor-agents:plan-writer-agent` | `ready-for-dev` |
+| build | `ready-for-dev`, `in-progress`, `blocked` | `openducktor-agents:build-runner-agent` | first `in-progress`, then `ai-review` |
+| qa    | `ai-review` | `openducktor-agents:qa-review-agent` | `human-review` (approved) or `in-progress` (rejected) |
+
+A `type:task`/`type:bug` issue may skip spec/plan: the transition script
+allows `open -> in-progress` and `spec-ready -> in-progress` only when
+that type label is present, so attempting the normal spec transition on
+such an issue is fine, but if a run is told to start build directly, the
+script will accept the shortcut.
+
+For each phase, in order:
+
+1. **Compute the artifact path(s)** as absolute paths:
+   `<root>/<issue>/spec.md`, `.../plan.md`, `.../build.md`,
+   `.../qa.md`.
+2. **Resolve dependency read-paths** (see the dependsOn section). Pass
+   depended-on issues' `spec.md`/`plan.md` paths as read-only context.
+   Pass no other-issue path when `dependsOn` is empty.
+3. **Invoke the phase agent** with a `schema` forcing the structured
+   return object (so the agent returns the object, not prose). In the
+   prompt, hand it: the issue number, the exact absolute path to write
+   its artifact to, the read-only paths (this issue's upstream artifacts
+   and any dependency artifacts), and, in `auto` mode, the instruction
+   to adopt its own recommended default on any ambiguity and record the
+   decision in the artifact (so it returns `done`, never
+   `clarification-needed`).
+4. **On a `clarification-needed` return** (only possible in
+   `semi-auto`/`manual`): follow the "Raising a question" procedure
+   below, then re-invoke this same phase agent with the answer folded
+   into its instructions. The agent writes the artifact only after the
+   answer is in hand.
+5. **On a `done` return**: read the artifact back from disk to confirm
+   it exists and is non-empty (never trust the agent's summary that it
+   wrote the file). For QA, parse the trailing `QA-VERDICT:` line from
+   `qa.md` itself and record it in `state.json.qaVerdict`.
+6. **Artifact-approval gate** (see the modes section): in `manual` mode,
+   stop for an approve/revise decision before advancing; in
+   `auto`/`semi-auto`, advance immediately.
+7. **Advance the status** by shelling out to the transition script (see
+   below). Then re-read `state.json.status` and continue to the next
+   phase.
+
+### Build phase specifics
+
+- The entry transition is its own step: from `ready-for-dev` or
+  `blocked`, first transition to `in-progress` (the script has no
+  `ready-for-dev -> ai-review` edge); if already at `in-progress`, skip
+  that (there is no `in-progress -> in-progress` edge). The agent runs,
+  opens/updates the PR with a clean `Closes #<issue>` body, writes
+  `build.md`, then you transition `in-progress -> ai-review`.
+- Record the PR number: after the build agent returns, re-derive the
+  linked PR (see Finding the linked PR) and write it to
+  `state.json.prNumber` as a cache. Never trust a stored `prNumber` over
+  a fresh lookup.
+
+### QA phase specifics
+
+- Read the verdict from the last `QA-VERDICT:` line of `qa.md`, not from
+  the agent's return.
+- In `auto`/`semi-auto`: on `rejected`, route `qa.md` plus the rejection
+  back to the **build** agent as fixup feedback, transition `ai-review
+  -> in-progress`, re-run build, transition back to `ai-review`, re-run
+  QA. Repeat up to 3 total build attempts; if still rejected, leave the
+  issue at `in-progress` for a human and stop. On `approved`, transition
+  `ai-review -> human-review`.
+- In `manual`: after writing `qa.md`, hit the QA approval gate (below).
+
+## The single validated status mutator
+
+The **only** way you change `state.json.status` is by shelling out to
+the transition script. You never write the `status` field with your own
+`jq`/`Write`:
+
+```
+bash .claude/scripts/issue-state-transition.sh <root> <issue> <to-status>
+```
+
+- Check the exit code. A non-zero exit is a hard error (an illegal
+  transition, or a missing state file): surface it, do not swallow it,
+  do not retry with a different target to force it through.
+- You **do** directly write the other `state.json` fields (`mode`,
+  `prNumber`, `qaVerdict`, `pendingQuestion`, `dependsOn`) with `jq`/an
+  edit, since those are not the state machine and have no transition
+  rules. Only `status` is gated.
+- Statuses are bare (no `status:` prefix): `open`, `spec-ready`,
+  `ready-for-dev`, `in-progress`, `blocked`, `ai-review`,
+  `human-review`, `closed`, and the four gates
+  `spec-awaiting-approval`, `plan-awaiting-approval`,
+  `build-awaiting-approval`, `qa-awaiting-approval`.
+
+## Raising a question (the interactive, resumable core)
+
+Whenever a question must be surfaced (an agent returned
+`clarification-needed`, a manual gate needs an approve/revise decision,
+or a dependency is missing), do this in exactly this order:
+
+1. **Write `state.json.pendingQuestion` first**, before any prompt:
+   `{"phase": "spec"|"plan"|"build"|"qa"|"dependency"|"gate", "question":
+   "...", "options": [{"label": "...", "description": "..."}, ...],
+   "recommendedDefault": "label of the recommended (first) option"}`.
+2. **Call `AskUserQuestion`** with those options, recommended first.
+   **All context the human needs to answer must live inside the question
+   text and the option `label`/`description` fields. Never print
+   decision context as prose before the call.** This is a hard rule:
+   text emitted just before an `AskUserQuestion` call can be dropped in
+   a background session, so a self-contained question is the only kind
+   that survives.
+3. **On the answer: clear `pendingQuestion` to `null`**, then fold the
+   answer into the next action.
+
+Because artifacts are written only after every question is answered,
+the answer always flows into the agent (or the gate/dependency branch),
+never into a half-written file. There is nothing to reconcile.
+
+## Modes: two orthogonal axes
+
+Evaluate these two decisions separately for every phase.
+
+- **Questions axis** (is an agent's raised ambiguity surfaced?):
+  - `auto`: never. Invoke the agent told to adopt its own recommended
+    default and record the decision in the artifact, so it returns
+    `done`. Nothing is written to `pendingQuestion`; nothing prompts.
+  - `semi-auto` / `manual`: a `clarification-needed` return is surfaced
+    inline via the procedure above.
+- **Artifact-approval axis** (do you stop after a written artifact?):
+  - `auto` / `semi-auto`: auto-approve every artifact; advance
+    immediately.
+  - `manual`: after each phase's artifact is written and read back, use
+    `AskUserQuestion` to approve or revise. `approve` advances via the
+    transition script (into that phase's `*-awaiting-approval` gate then
+    out to the real next status, matching the gate edges in the table).
+    `revise` re-runs that phase's agent with the feedback, re-writes the
+    artifact in place, and asks again. The QA-gate `revise` routes the
+    feedback plus the current `qa.md` to the **build** agent (not QA),
+    re-runs QA, re-writes `qa.md`, and stays at the gate.
+
+The axes are genuinely orthogonal: a spec with no question in
+`semi-auto` still auto-approves; the same spec in `manual` still stops
+for approval even though no question was raised.
+
+## dependsOn: read-only, one-directional access
+
+- Before invoking the spec/plan/build agent for issue N, read
+  `state.json.dependsOn` (default `[]`). For each depended-on issue D,
+  resolve `<root>/D/spec.md` and `<root>/D/plan.md`.
+- If those exist, pass them as **read-only** paths in the agent prompt.
+  If `dependsOn` is empty, pass no other-issue path at all. Never hand
+  issue N's agent the path where a non-dependency issue could be
+  written; one-directionality is structural, not a rule the agent must
+  remember.
+- If a depended-on `D`'s folder or artifacts **do not exist** when
+  they'd be read: do not silently proceed and do not hard-block. Raise a
+  question (via the procedure above, `phase: "dependency"`) with options
+  "Proceed without the missing dependency" (recommended default, so a
+  bare run still moves) and "Wait". If the human picks "Wait", stop
+  cleanly with `pendingQuestion` cleared and `status` unchanged, so a
+  later re-run retries the dependency.
+
+## Finding the linked PR
+
+The PR is the one GitHub considers linked to the issue (its body
+references it via `Closes #N`). Re-derive it fresh whenever you need it;
+never trust a stored `prNumber` over a fresh lookup:
+
+```
+gh repo view --json owner,name --jq '.owner.login + " " + .name'
+gh api graphql -f query='query { repository(owner: "OWNER", name: "NAME") { issue(number: <issue>) { closedByPullRequestsReferences(first: 5) { nodes { number } } } } }'
+```
+
+Take the first node's number, or none. Cache it into
+`state.json.prNumber` after a build, but always re-derive for QA and
+merge.
+
+## Merge (terminal action, never automatic)
+
+`merge` only runs when explicitly invoked, never from a pipeline mode.
+
+- Refuse unless `state.json.status === "human-review"`. Fail loudly
+  otherwise (state the current status and that merge waits for
+  human-review).
+- Find the linked PR (above). If none, fail loudly.
+- Squash-merge and delete the branch: `gh pr merge <pr> --squash
+  --delete-branch`.
+- Transition `human-review -> closed` via the script.
+
+## Anti-patterns
+
+- Printing decision context as prose before an `AskUserQuestion` call.
+  Put all of it inside the question and option text; a background
+  session can drop pre-call text, so a self-contained question is the
+  only safe kind.
+- Writing `state.json.status` with your own `jq`/`Write`. Only the
+  transition script moves the machine; check its exit code and treat a
+  non-zero as a hard error.
+- Prompting before persisting `pendingQuestion`. Persist first, always,
+  so a killed session re-asks the exact question.
+- Trusting session memory for "where am I". Read `state.json.status`
+  and `pendingQuestion` every run.
+- Posting anything to the issue thread, or adding a bookkeeping comment
+  to the pull request. The only GitHub writes are the PR and its
+  `Closes #N`.
+- `git add`ing any file under `<repo>.issues/`, or writing an artifact
+  inside the repo tree.
+- Trusting an agent's "I wrote the file" over reading the file back;
+  trusting the agent's summary of a QA verdict over the `QA-VERDICT:`
+  line in `qa.md`.
+- Launching multiple issues from here. This skill drives exactly one
+  issue; a fleet is several independent background sessions, each its
+  own `/issue-pipeline` run.
+
+## Done criteria
+
+The issue has advanced to its next resting point: an artifact written
+for each phase run, the status moved only through the transition script,
+any open question persisted in `state.json.pendingQuestion` (and nothing
+else recording it), no comment posted to the issue thread, and the only
+GitHub writes being the pull request and its `Closes #N`. A re-run reads
+`state.json` and resumes exactly where this one stopped.
