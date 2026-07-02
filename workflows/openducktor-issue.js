@@ -7,8 +7,10 @@
 // Run with:
 //   Workflow({ scriptPath: ".claude/workflows/openducktor-issue.js", args: { issueNumber: 142, mode: "auto" } })
 //   Workflow({ scriptPath: ".claude/workflows/openducktor-issue.js", args: { issueNumber: 142, mode: "manual" } })
+//   Workflow({ scriptPath: ".claude/workflows/openducktor-issue.js", args: { issueNumber: 142, mode: "merge" } })
 // or as a slash command: /openducktor-issue 142 (auto mode)
 //                     or: /openducktor-issue 142 manual (manual mode)
+//                     or: /openducktor-issue 142 merge (merge mode)
 //
 // auto mode: identical to the original script. Every phase's output
 // is immediately approved and the pipeline runs straight through to
@@ -42,6 +44,13 @@
 // marker is resolved, continues straight into the rest of the
 // pipeline in the same invocation, rather than requiring a /revise
 // comment posted by hand followed by a second run.
+//
+// merge mode is a standalone terminal action, not a pipeline phase.
+// It only runs when explicitly invoked (never automatically from auto
+// or manual mode), and only when the issue is at status:human-review,
+// the one point a human is meant to look at the result before it
+// lands. It squash-merges the linked pull request, deletes its
+// branch, and transitions the issue to status:closed.
 
 export const meta = {
   name: "openducktor-issue",
@@ -451,8 +460,31 @@ if (!issue) {
     'Missing issue number. Pass args: { issueNumber: N, mode: "auto" | "manual" }, or invoke as "/openducktor-issue N" or "/openducktor-issue N manual".',
   );
 }
-if (mode !== "auto" && mode !== "manual") {
-  throw new Error(`Unknown mode "${mode}". Use "auto" or "manual".`);
+if (mode !== "auto" && mode !== "manual" && mode !== "merge") {
+  throw new Error(`Unknown mode "${mode}". Use "auto", "manual", or "merge".`);
+}
+
+// merge mode is a standalone terminal action, not a pipeline phase: it
+// only squash-merges the linked PR and closes the issue once a human
+// has actually reached status:human-review. It never runs unattended
+// as part of auto/manual mode, since human-review is the one point a
+// person is meant to look at the result before it lands.
+if (mode === "merge") {
+  const currentStatus = await currentLabel(issue);
+  if (currentStatus !== "status:human-review") {
+    throw new Error(
+      `Issue ${issue} is at ${currentStatus}, not status:human-review. Refusing to merge until a human ` +
+        `has actually reached that review gate.`,
+    );
+  }
+  const pr = await findLinkedPr(issue);
+  if (!pr) {
+    throw new Error(`Issue ${issue} is at status:human-review but no linked pull request was found.`);
+  }
+  await agent(`Run: gh pr merge ${pr} --squash --delete-branch`, { label: "merge-pr", model: "haiku" });
+  await transitionTo(issue, "status:closed");
+  log(`Issue ${issue} merged pull request ${pr} (squash) and transitioned to status:closed.`);
+  return { issue, status: "merged", pr };
 }
 
 const buildDef = PHASE_DEFS.find((def) => def.key === "build");

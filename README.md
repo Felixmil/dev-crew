@@ -71,6 +71,10 @@ Re-running the workflow with no `/approve` or `/revise` comment since the gate w
 
 Every posted or revised comment mentions `@Felixmil` (configurable via `NOTIFY_GITHUB_USERNAME` at the top of the script) so GitHub sends a notification regardless of the repo's default notification settings.
 
+### merge mode
+
+`/openducktor-issue 142 merge` is a standalone terminal action, not a pipeline phase. It refuses to run unless the issue is currently at `status:human-review`, since that status exists specifically as the one point a human is meant to look at the result before it lands; neither auto nor manual mode ever calls it automatically. Once at that gate, it squash-merges the linked pull request (`gh pr merge --squash --delete-branch`), then transitions the issue to `status:closed`.
+
 ### QA rejection loops back into build
 
 A `QA-VERDICT: rejected` report is fed back to the build agent as fix-it feedback, not left for a human to relay by hand:
