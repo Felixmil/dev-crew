@@ -18,7 +18,7 @@ skills/
   run-pipeline-gh/                 /run-pipeline-gh N [mode]: gh-posting pipeline; state hidden and local, artifacts on GitHub
   refine-issue/                    /refine-issue N: interrogate a raw issue before spec work starts
   create-local-issue/              /create-local-issue: make a filesystem-only issue (L1, L2, ...) with no GitHub issue
-  resolve-conflicts/               /resolve-conflicts [N]: resolve conflicts, ask only about semantic ones
+  update-branch/                   /update-branch [branch]: merge the target in, ask only about semantic conflicts
   address-pr/                      /address-pr N: fix a PR's CI failures and address its valid review comments
   merge-pr/                        /merge-pr N: squash-merge a PR after gating CI, mergeability, and rule bypass
 scripts/
@@ -42,7 +42,7 @@ Install the plugin:
 /plugin install dev-crew@dev-crew
 ```
 
-The marketplace path is the on-disk repo directory; the plugin and marketplace are both named `dev-crew`. After you install it, the five agents (`spec-writer`, `planner`, `builder`, `reviewer`, `conflict-resolver`) are available as `subagent_type`, and every skill (`/run-pipeline`, `/run-pipeline-gh`, `/refine-issue`, `/create-local-issue`, `/resolve-conflicts`, `/address-pr`, `/merge-pr`) is available in every project.
+The marketplace path is the on-disk repo directory; the plugin and marketplace are both named `dev-crew`. After you install it, the five agents (`spec-writer`, `planner`, `builder`, `reviewer`, `conflict-resolver`) are available as `subagent_type`, and every skill (`/run-pipeline`, `/run-pipeline-gh`, `/refine-issue`, `/create-local-issue`, `/update-branch`, `/address-pr`, `/merge-pr`) is available in every project.
 
 The transition script both pipelines use (`scripts/pipeline-transition.sh`) ships inside the plugin and is invoked through the plugin-root path variable, `"${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-transition.sh"`, so it travels with the install and needs no copying into a target repo.
 
@@ -148,9 +148,9 @@ A local issue is then first-class:
 
 Everything else (`state.json`, the four artifacts, the three modes, the gates, resumability, `dependsOn`) matches a GitHub-backed issue. A local issue ships as a pull request; only the issue side of the flow is local.
 
-## resolve-conflicts: a conflict resolver for the fleet
+## update-branch: bring a branch up to date with its target
 
-Running several issues at once means branches drift and conflict, with the base branch or with each other, when they rebase or merge. `agents/conflict-resolver.md` and `skills/resolve-conflicts/SKILL.md` handle that on the same "resolve the safe part, ask about the risky part" principle the pipeline agents use. Invoke it as `/resolve-conflicts`, or `/resolve-conflicts <issue>` to also hand the resolver that issue's `spec.md`/`plan.md` for intent. No pipeline calls it.
+Running several issues at once means branches drift behind the base branch and pick up conflicts when they finally merge. `skills/update-branch/SKILL.md` brings a branch current by **merging its target in** (never a rebase, so review threads and comment anchors survive), and only when that merge conflicts does it drive `agents/conflict-resolver.md` on the same "resolve the safe part, ask about the risky part" principle the pipeline agents use. Invoke it as `/update-branch` (the current branch), `/update-branch <branch>`, `/update-branch <branch> onto <target>` to pick the target, or add an issue number so the resolver gets that issue's `spec.md`/`plan.md` for intent. `/address-pr` calls it first, to avoid chasing failures the target already fixed; no other pipeline calls it.
 
 The division of labor is the point, because the dangerous failure is a wrong merge that still compiles:
 
@@ -177,7 +177,7 @@ After pushing, it replies per comment on inline review threads (what changed, or
 
 Before it merges anything, it checks three gates and surfaces any red one to you through `AskUserQuestion`:
 
-- **Mergeability** (`gh pr view --json mergeable,mergeStateStatus`): a `CONFLICTING` or `DIRTY` PR (conflicts) and a `BEHIND` one are handed back to you rather than force-merged; the `/resolve-conflicts` skill can help with conflicts. A transient `UNKNOWN` is polled a few times before it is trusted.
+- **Mergeability** (`gh pr view --json mergeable,mergeStateStatus`): a `CONFLICTING` or `DIRTY` PR (conflicts) and a `BEHIND` one are handed back to you rather than force-merged; the `/update-branch` skill can bring a `BEHIND` branch current and resolve any conflicts the merge surfaces. A transient `UNKNOWN` is polled a few times before it is trusted.
 - **CI** (`gh pr checks`): all-green passes; failing checks are named and you are asked whether to proceed; pending checks are not merged into without asking.
 - **Branch-protection bypass**: if the PR is `BLOCKED` by branch protection and you are a repo administrator who could bypass with `--admin`, the skill asks explicitly before bypassing rules. If you are not an administrator, it stops and reports what is missing.
 

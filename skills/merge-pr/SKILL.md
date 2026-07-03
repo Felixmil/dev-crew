@@ -40,10 +40,11 @@ Read `mergeable` and `mergeStateStatus` from the PR.
   a few seconds and re-read, up to ~5 tries, before treating it as real.
 - **Conflicts:** if `mergeable` is `CONFLICTING` or `mergeStateStatus`
   is `DIRTY`, the PR has merge conflicts. Do **not** merge. Tell the user
-  to resolve them (the `/resolve-conflicts` skill can help), and stop.
+  to resolve them (the `/update-branch` skill can help), and stop.
 - **Behind base:** if `mergeStateStatus` is `BEHIND`, the branch needs
-  updating against base first. Stop and tell the user (do not silently
-  rebase/merge base in).
+  updating against base first. Stop and tell the user (the `/update-branch`
+  skill brings it up to date); do not silently rebase/merge base in
+  yourself.
 - **Blocked:** if `mergeStateStatus` is `BLOCKED`, it is blocked by
   branch protection (missing required review, failing/omitted required
   check, or a ruleset). This feeds Gate 3 (bypass); do not fail yet.
@@ -130,7 +131,7 @@ merge over this:
 - Using `--admin` to bypass branch protection without an explicit, loud
   opt-in. Bypassing rules is never the silent-default path.
 - Merging a `CONFLICTING`/`DIRTY` PR, or a `BEHIND` one, by forcing it.
-  Stop and hand it back to the user (or `/resolve-conflicts`).
+  Stop and hand it back to the user (or `/update-branch`).
 - Treating a transient `UNKNOWN` merge state as a real blocker without
   polling a few times first.
 - Failing the whole action because the pipeline `state.json` could not be

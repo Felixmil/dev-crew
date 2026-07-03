@@ -33,9 +33,20 @@ not automatically a code defect.
 
 ## Setup
 
-1. **Load the PR**: `gh pr view <PR> --json number,title,body,headRefName,state,url` and
-   `gh pr diff <PR>`. Note the head branch; the builder works on it.
-2. **Find the issue's spec/plan for grounding.** The agreed spec and plan
+1. **Load the PR**: `gh pr view <PR> --json number,title,body,headRefName,baseRefName,state,url` and
+   `gh pr diff <PR>`. Note the head branch (the builder works on it) and the
+   base branch (the target it merges into).
+2. **Bring the branch up to date with its target first.** A branch that is
+   behind its base can show CI failures or attract review comments that the
+   target branch has *already* fixed, so syncing before you diagnose avoids
+   chasing problems that no longer exist. Delegate this to the
+   `update-branch` skill (it merges `baseRefName` into the head branch,
+   never a rebase, so review threads and comment anchors survive, and drives
+   the conflict resolver if the merge conflicts). If it brought changes in,
+   push the updated branch and re-read the PR state (checks and comments)
+   against it before proceeding. If the branch is already current,
+   `update-branch` says so and there is nothing to sync.
+3. **Find the issue's spec/plan for grounding.** The agreed spec and plan
    are what make a review comment "valid" or "out of scope", so locate
    them:
    - **Primary (reverse-lookup):** derive the state root from git
@@ -49,7 +60,7 @@ not automatically a code defect.
      **without** spec/plan grounding, and say so explicitly, you will
      judge comments on code merit alone, and cannot check scope against a
      contract. Do not invent a spec/plan.
-3. **Auto-detect the work** (unless steering narrows it): run
+4. **Auto-detect the work** (unless steering narrows it): run
    `gh pr checks <PR>` to see if any check is failing (the CI job), and
    read the review comments (the reviews job). Do whichever apply; do both
    if both apply.
@@ -165,8 +176,11 @@ After pushing fixes:
 
 ## Done criteria
 
-Every failing CI check has been either fixed-and-pushed (and re-checked
-toward green) or reported as infra/flaky/unresolvable with a reason; every
+The branch was brought up to date with its target before diagnosing (or
+confirmed already current), so no already-solved failure or comment was
+chased; every failing CI check has been either fixed-and-pushed (and
+re-checked toward green) or reported as infra/flaky/unresolvable with a
+reason; every
 review comment has been addressed (fixed + replied), skipped (with a
 reasoned reply citing spec/plan where relevant), or escalated to you and
 resolved; replies went per-comment on inline threads and as one summary
