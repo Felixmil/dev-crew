@@ -26,7 +26,7 @@ convenience. When in doubt, ask; do not merge.
 ## Setup
 
 1. **Resolve the repo**: `gh repo view --json owner,name,nameWithOwner`.
-2. **Load the PR**: `gh pr view <pr> --json number,title,headRefName,state,mergeable,mergeStateStatus,url`.
+2. **Load the PR**: `gh pr view <pr> --json number,title,headRefName,baseRefName,state,mergeable,mergeStateStatus,url`.
    If `state` is not `OPEN` (already merged/closed), say so and stop.
 
 ## The gates (run in order; stop and ask on any red one)
@@ -142,6 +142,31 @@ merge over this (the merge is the deliverable; this is housekeeping):
 Every step here is best-effort: a skipped or failed cleanup is a soft
 warning in your report, never a merge failure.
 
+## Syncing the local base branch (best-effort)
+
+The squash-merge landed on the **remote** base branch, so `origin/<base>`
+now has the merge commit but your local base branch is one commit behind.
+Bring it up to date, but only when it is unambiguously safe, and never
+fail the merge over it:
+
+1. The base branch is `baseRefName` from the PR (loaded in Setup).
+2. **Only sync when you are standing on the base branch with a clean
+   tree.** Check the current branch (`git rev-parse --abbrev-ref HEAD`)
+   against `baseRefName`, and the working tree (`git status --porcelain`)
+   for cleanliness. If the current branch is not `baseRefName` (you are in
+   a feature worktree or on another branch), or the tree is dirty, **skip
+   with a warning** naming the base branch so the user can pull it
+   themselves. Do not switch branches to force the pull.
+3. **Fast-forward only.** When the guard passes, run
+   `git pull --ff-only origin <baseRefName>`. `--ff-only` means the pull
+   can only move the branch straight forward to `origin/<base>`; it can
+   never create a merge commit and never produce a conflict. If it cannot
+   fast-forward (local base has diverged from the remote), it fails
+   harmlessly, treat that as a skip-with-warning, not a merge failure.
+
+This is best-effort like the cleanup: a skipped or failed sync is a soft
+warning in your report, never a merge failure.
+
 ## Closing the pipeline issue (best-effort)
 
 A PR may or may not have been driven by a dev-crew pipeline. After a
@@ -185,8 +210,12 @@ merge over this:
 - Treating a transient `UNKNOWN` merge state as a real blocker without
   polling a few times first.
 - Failing the whole action because the pipeline `state.json` could not be
-  closed, or a branch/worktree could not be cleaned up. The merge is the
-  deliverable; closing state and cleanup are best-effort.
+  closed, a branch/worktree could not be cleaned up, or the local base
+  branch could not be synced. The merge is the deliverable; closing state,
+  cleanup, and the base sync are best-effort.
+- Pulling the base branch when you are not on it or the tree is dirty, or
+  with anything but `--ff-only`. Only fast-forward the base branch, only
+  when standing on it clean; otherwise skip with a warning.
 - Force-removing a **dirty** worktree, or removing the worktree you are
   currently standing in, or force-deleting a branch still checked out
   somewhere. Guard each and skip-with-warning instead of forcing.
@@ -200,7 +229,10 @@ gate or had each red gate explicitly authorized by the user (CI-red
 proceed, and/or an admin branch-protection bypass). The local head branch
 and any worktree that held it were removed (best-effort, guarded: a dirty
 worktree, the current worktree, or a branch checked out elsewhere is
-skipped with a warning). If the PR mapped to a pipeline issue, that issue's
+skipped with a warning). If the local checkout was on the PR's base branch
+with a clean tree, that base branch was fast-forwarded to the merge commit
+(best-effort; skipped with a warning otherwise). If the PR mapped to a
+pipeline issue, that issue's
 `state.json` was moved to `closed` (best-effort), and for a file-based
 issue its folder was moved into `<repo>.issues/archive/` (best-effort,
 skipped if already archived). If any gate was red and the user declined,
