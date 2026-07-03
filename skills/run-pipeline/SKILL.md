@@ -1,6 +1,6 @@
 ---
-name: issue-pipeline
-description: Drives one GitHub issue through spec -> plan -> build -> QA, keeping the four artifacts and the state machine on the local filesystem under <repo>.issues/<issue>/ and all human interaction inline in this session. The GitHub issue is the input; a pull request is the ship channel; nothing is posted to the issue thread. Use when the user says "run the issue pipeline on N", "drive issue N through the pipeline", passes a mode (auto/semi-auto/manual/merge), or invokes /issue-pipeline with an issue number.
+name: run-pipeline
+description: Drives one issue (a GitHub issue number, or a local L-prefixed issue) through spec -> plan -> build -> QA, keeping the four artifacts and the state machine on the local filesystem under <repo>.issues/<issue>/ and all human interaction inline in this session. The issue is the input; a pull request is the ship channel; nothing is posted to the issue thread. Use when the user says "run the pipeline on N", "drive issue N through the pipeline", passes a mode (auto/semi-auto/manual), or invokes /run-pipeline with an issue number.
 ---
 
 # Issue pipeline
@@ -28,9 +28,22 @@ of this conversation.
 ## Setup (run once at the top of every invocation)
 
 1. **Parse the argument** as `<issue> [mode]`. `mode` is one of `auto`,
-   `semi-auto`, `manual`, or the terminal action `merge`. If no mode
-   word is given, default to `semi-auto` (but see step 4: a persisted
-   mode wins for a resume). Reject any other mode word loudly.
+   `semi-auto`, or `manual`. If no mode word is given, default to
+   `semi-auto` (but see step 4: a persisted mode wins for a resume).
+   Reject any other mode word loudly. (Merging a finished PR is a
+   separate skill, `/merge-pr`, not a mode here.)
+   - **Local issues.** An id starting with `L` (e.g. `L3`) is a **local
+     issue**: it has no GitHub issue, its description lives in
+     `<root>/<id>/issue.md` (created by the create-local-issue skill), and
+     it is driven exactly like a GitHub issue except for three things,
+     applied throughout this skill: (a) wherever you would read the issue
+     with `gh issue view`, instead read `<root>/<id>/issue.md`; (b) the
+     transition script already treats a local id as non-task and does no
+     `gh` call; (c) the build phase opens a PR that references the local
+     id in text rather than `Closes #N` (there is no GitHub issue to
+     close), and the linked PR is found by branch, not by a `Closes`
+     link (see Finding the linked PR). Everything else (state.json, the
+     four artifacts, modes, gates, resumability) is identical.
 2. **Derive the state root from git**, not from a hardcoded path:
    - Run `git rev-parse --show-toplevel` to get the repo's working tree
      root (an absolute path). Call its basename `<repo>` and its parent
@@ -53,10 +66,7 @@ of this conversation.
 4. **Reconcile mode.** If `state.json` already existed and the caller
    passed no mode word, use the persisted `state.json.mode`. If the
    caller passed a mode word, write it into `state.json.mode` (a rerun
-   may legitimately change the mode). `merge` is an action, not a
-   persisted mode; do not write `merge` into `state.json.mode`.
-5. **`merge` short-circuits everything below.** If the action is
-   `merge`, jump straight to the Merge section.
+   may legitimately change the mode).
 
 ## Resume a pending question first (before any phase)
 
@@ -87,16 +97,14 @@ transition script, see below):
 
 | Phase | Entry status | Agent | On success -> |
 | --- | --- | --- | --- |
-| spec  | `open` | `openducktor-agents:spec-writer-agent` | `spec-ready` |
-| plan  | `spec-ready` | `openducktor-agents:plan-writer-agent` | `ready-for-dev` |
-| build | `ready-for-dev`, `in-progress`, `blocked` | `openducktor-agents:build-runner-agent` | first `in-progress`, then `ai-review` |
-| qa    | `ai-review` | `openducktor-agents:qa-review-agent` | `human-review` (approved) or `in-progress` (rejected) |
+| spec  | `open` | `dev-crew:spec-writer` | `spec-ready` |
+| plan  | `spec-ready` | `dev-crew:planner` | `ready-for-dev` |
+| build | `ready-for-dev`, `in-progress`, `blocked` | `dev-crew:builder` | first `in-progress`, then `ai-review` |
+| qa    | `ai-review` | `dev-crew:reviewer` | `human-review` (approved) or `in-progress` (rejected) |
 
-A `type:task`/`type:bug` issue may skip spec/plan: the transition script
-allows `open -> in-progress` and `spec-ready -> in-progress` only when
-that type label is present, so attempting the normal spec transition on
-such an issue is fine, but if a run is told to start build directly, the
-script will accept the shortcut.
+Every issue runs the full spec -> plan -> build -> QA path. There is no
+task/bug skip-spec shortcut: the transition script has no
+`open -> in-progress` fast-path edge, so a spec is always produced first.
 
 For each phase, in order:
 
@@ -158,11 +166,12 @@ For each phase, in order:
 ## The single validated status mutator
 
 The **only** way you change `state.json.status` is by shelling out to
-the transition script. You never write the `status` field with your own
-`jq`/`Write`:
+the transition script. It ships with the plugin (you never copy it into
+the target repo); reference it by the plugin-root path variable. You never
+write the `status` field with your own `jq`/`Write`:
 
 ```
-bash .claude/scripts/issue-state-transition.sh <root> <issue> <to-status>
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-transition.sh" <root> <issue> <to-status>
 ```
 
 - Check the exit code. A non-zero exit is a hard error (an illegal
@@ -264,30 +273,31 @@ for approval even though no question was raised.
 
 ## Finding the linked PR
 
-The PR is the one GitHub considers linked to the issue (its body
-references it via `Closes #N`). Re-derive it fresh whenever you need it;
-never trust a stored `prNumber` over a fresh lookup:
+Re-derive the PR fresh whenever you need it; never trust a stored
+`prNumber` over a fresh lookup.
+
+For a **GitHub issue**, the PR is the one GitHub considers linked (its
+body references it via `Closes #N`):
 
 ```
 gh repo view --json owner,name --jq '.owner.login + " " + .name'
 gh api graphql -f query='query { repository(owner: "OWNER", name: "NAME") { issue(number: <issue>) { closedByPullRequestsReferences(first: 5) { nodes { number } } } } }'
 ```
 
-Take the first node's number, or none. Cache it into
-`state.json.prNumber` after a build, but always re-derive for QA and
-merge.
+For a **local issue** (id starts with `L`), the PR carries no `Closes`
+link, so find it by the branch the build agent worked on instead:
 
-## Merge (terminal action, never automatic)
+```
+gh pr list --head "$(git rev-parse --abbrev-ref HEAD)" --state all --json number --jq '.[0].number'
+```
 
-`merge` only runs when explicitly invoked, never from a pipeline mode.
+Take the number, or none. Cache it into `state.json.prNumber` after a
+build, but always re-derive for QA.
 
-- Refuse unless `state.json.status === "human-review"`. Fail loudly
-  otherwise (state the current status and that merge waits for
-  human-review).
-- Find the linked PR (above). If none, fail loudly.
-- Squash-merge and delete the branch: `gh pr merge <pr> --squash
-  --delete-branch`.
-- Transition `human-review -> closed` via the script.
+Merging the finished PR is a separate skill, `/merge-pr <pr>`, which runs
+its own safety gates (CI green, mergeable, no rule bypass without asking)
+and marks this issue's `state.json` closed afterward. This pipeline stops
+at `human-review`; it never merges.
 
 ## Anti-patterns
 
@@ -317,7 +327,7 @@ merge.
   line in `qa.md`.
 - Launching multiple issues from here. This skill drives exactly one
   issue; a fleet is several independent background sessions, each its
-  own `/issue-pipeline` run.
+  own `/run-pipeline` run.
 
 ## Done criteria
 

@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
-# Usage: odt-transition.sh <issue-number> <to-label>
+# DRAFT / INACTIVE. This script lives under drafts/ and is used by nothing
+# active. The gh-posting pipeline no longer stores state in GitHub
+# status:* labels: it uses the local state.json (via
+# .claude/scripts/issue-state-transition.sh), the same store as the
+# file-based pipeline, so it works in repos where status:* labels are
+# unavailable or the user cannot create them. This label-based mutator is
+# kept only as a reference / reactivation path. See drafts/README.md.
+#
+# Usage: status-transition.sh <issue-number> <to-label>
 # Reads the issue's current status:* label, checks it against the
 # transition table below, and only then rewrites the label.
 #
