@@ -62,15 +62,18 @@ State lives next to the repo, never inside it. The skill derives the root from g
 
 ```
 ~/Code/esqlabsR.issues/
-  142/
+  142/            an active issue: the pipeline is driving it, or it is waiting
     state.json    the pipeline state; the only file whose "status" is gated
     spec.md       written by spec-writer
     plan.md       written by planner
     build.md      the fuller build summary, a separate document from the PR body
     qa.md         the QA report, ending in one "QA-VERDICT: approved|rejected" line
+  archive/        merged issues, moved out of the active set by /merge-pr
+    128/          same five files, kept as a read-only record after the merge
+      ...
 ```
 
-A file's absence means that phase has not produced its artifact yet. None of these files, and no `state.json`, is `git add`ed or posted to GitHub; they sit outside the repo tree by construction. All worktrees of one repo share a single `<repo>.issues` root, so an issue's state is the same wherever you drive it from.
+A file's absence means that phase has not produced its artifact yet. When `/merge-pr` merges an issue's PR, it marks the issue `closed` and moves its folder into `archive/`, so the top level of `<repo>.issues/` holds only live issues while the merged ones stay on disk as a record (and as read-only context for anything that still `dependsOn` them). None of these files, and no `state.json`, is `git add`ed or posted to GitHub; they sit outside the repo tree by construction. All worktrees of one repo share a single `<repo>.issues` root, so an issue's state is the same wherever you drive it from.
 
 `state.json` records the bare `status` (no `status:` prefix), the `mode`, the linked `prNumber` (a cache, re-derived fresh before it is trusted), the last `qaVerdict`, a `pendingQuestion`, and a `dependsOn` list. An open question lives only in `state.json.pendingQuestion`. An artifact is written only after every question is answered, so a run stopped mid-question leaves the persisted question and no partial artifact.
 
@@ -181,7 +184,7 @@ Before it merges anything, it checks three gates and surfaces any red one to you
 - **CI** (`gh pr checks`): all-green passes; failing checks are named and you are asked whether to proceed; pending checks are not merged into without asking.
 - **Branch-protection bypass**: if the PR is `BLOCKED` by branch protection and you are a repo administrator who could bypass with `--admin`, the skill asks explicitly before bypassing rules. If you are not an administrator, it stops and reports what is missing.
 
-On success it runs `gh pr merge <pr> --squash --delete-branch`, adding `--admin` only when you authorized a bypass. If the PR maps to a pipeline issue (through `Closes #N` or a local `L`-id), it then marks that issue's `state.json` `closed` in whichever state root holds it (`<repo>.issues/` or `~/.claude/dev-crew/`), on a best-effort basis; a PR that was not pipeline-driven merges with nothing to close.
+On success it runs `gh pr merge <pr> --squash --delete-branch`, adding `--admin` only when you authorized a bypass. If the PR maps to a pipeline issue (through `Closes #N` or a local `L`-id), it then marks that issue's `state.json` `closed` in whichever state root holds it (`<repo>.issues/` or `~/.claude/dev-crew/`), on a best-effort basis; for a file-based issue it also moves the issue folder into `<repo>.issues/archive/` so the active set holds only live issues (skipped if already archived). A PR that was not pipeline-driven merges with nothing to close.
 
 ## The state machine
 

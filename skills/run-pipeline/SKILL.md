@@ -57,9 +57,16 @@ of this conversation.
      --git-common-dir` and resolve to the main checkout's directory name
      if you need the canonical repo name, so all worktrees of one repo
      share one `<repo>.issues` root.
-3. **Bootstrap the issue folder.** Create `<root>/<issue>/` if it does
-   not exist (`mkdir -p`). If `<root>/<issue>/state.json` does not exist,
-   seed it with `{"status": "open", "mode": "<mode>", "prNumber": null,
+3. **Bootstrap the issue folder.** First check whether this issue is
+   already **archived**: a merged issue's folder is moved to
+   `<root>/archive/<issue>/` by the `/merge-pr` skill. If
+   `<root>/archive/<issue>/` exists, the issue is closed and shipped, do
+   not re-bootstrap an empty active folder; tell the user it is already
+   merged and archived and stop (unless they explicitly want to re-open
+   it, in which case they should move it back out of `archive/`
+   themselves). Otherwise, create `<root>/<issue>/` if it does not exist
+   (`mkdir -p`). If `<root>/<issue>/state.json` does not exist, seed it
+   with `{"status": "open", "mode": "<mode>", "prNumber": null,
    "qaVerdict": null, "pendingQuestion": null, "dependsOn": []}` (the
    mode from step 1). Never `git add` this folder or any file in it;
    it lives outside the repo tree by construction.
@@ -257,7 +264,10 @@ for approval even though no question was raised.
 
 - Before invoking the spec/plan/build agent for issue N, read
   `state.json.dependsOn` (default `[]`). For each depended-on issue D,
-  resolve `<root>/D/spec.md` and `<root>/D/plan.md`.
+  resolve `<root>/D/spec.md` and `<root>/D/plan.md`; if D is not in the
+  active set, fall back to `<root>/archive/D/spec.md` and
+  `.../archive/D/plan.md` (a merged dependency is moved there by
+  `/merge-pr`, and its artifacts stay valid read-only context).
 - If those exist, pass them as **read-only** paths in the agent prompt.
   If `dependsOn` is empty, pass no other-issue path at all. Never hand
   issue N's agent the path where a non-dependency issue could be

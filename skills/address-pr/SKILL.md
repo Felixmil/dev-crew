@@ -51,11 +51,14 @@ not automatically a code defect.
    them:
    - **Primary (reverse-lookup):** derive the state root from git
      (`<parent>/<repo>.issues`), then find the issue folder whose
-     `state.json.prNumber` equals this PR number. That folder's `spec.md`
-     and `plan.md` are the grounding.
+     `state.json.prNumber` equals this PR number, searching both the
+     active set (`<root>/*/`) and the archive (`<root>/archive/*/`, where
+     `/merge-pr` moves a merged issue). That folder's `spec.md` and
+     `plan.md` are the grounding.
    - **Fallback (PR body):** if no `state.json` matches, parse the PR
-     body: a `Closes #N` points to `<root>/N/`; a local-issue PR
-     references its `L`-id in text pointing to `<root>/L#/`.
+     body: a `Closes #N` points to `<root>/N/` (or `<root>/archive/N/`
+     if merged); a local-issue PR references its `L`-id in text pointing
+     to `<root>/L#/` (or its archived location).
    - **If neither resolves** (PR made outside the pipeline): proceed
      **without** spec/plan grounding, and say so explicitly, you will
      judge comments on code merit alone, and cannot check scope against a

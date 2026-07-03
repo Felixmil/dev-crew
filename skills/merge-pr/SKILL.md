@@ -121,7 +121,19 @@ merge over this:
    `bash "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-transition.sh" <that-root> <issue> closed`
    (check the exit code; a non-zero here is a soft warning, the merge
    already happened).
-3. If no `state.json` is found in either root, that is fine, the PR was
+3. **Archive the merged issue (file-based pipeline only).** After a
+   successful `closed` transition on the **file-based** root
+   (`<parent>/<repo>.issues/`), move the issue folder out of the active
+   set into an `archive/` subfolder of that same root, so the active
+   directory holds only live issues:
+   `mkdir -p "<root>/archive" && mv "<root>/<issue>" "<root>/archive/<issue>"`.
+   This applies **only** to the file-based root; the gh-posting root
+   (`~/.claude/dev-crew/<repo>/`) is left as is (it is hidden state, not a
+   browsable working set). Guard the move: if `<root>/archive/<issue>`
+   already exists (a re-run after a prior merge), do not clobber it, the
+   issue is already archived; skip the move. Like the close, this is
+   best-effort: a failed move is a soft warning, never a merge failure.
+4. If no `state.json` is found in either root, that is fine, the PR was
    not pipeline-driven. Do nothing further; just report the merge.
 
 ## Anti-patterns
@@ -144,6 +156,8 @@ merge over this:
 The PR is squash-merged and its branch deleted, having passed every gate
 or had each red gate explicitly authorized by the user (CI-red proceed,
 and/or an admin branch-protection bypass). If the PR mapped to a pipeline
-issue, that issue's `state.json` was moved to `closed` (best-effort). If
-any gate was red and the user declined, nothing was merged and you
-reported exactly which gate stopped it.
+issue, that issue's `state.json` was moved to `closed` (best-effort), and
+for a file-based issue its folder was moved into `<repo>.issues/archive/`
+(best-effort, skipped if already archived). If any gate was red and the
+user declined, nothing was merged and you reported exactly which gate
+stopped it.
