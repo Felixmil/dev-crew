@@ -10,7 +10,7 @@ The plugin ships one crew of agents and two skills that drive an issue through s
 agents/                            five subagent definitions, one per job
   spec-writer.md                   turns an issue into a repo-grounded spec.md
   planner.md                       turns the spec into an ordered plan.md
-  builder.md                       implements the plan, opens the PR, writes build.md
+  builder.md                       implements the plan, opens the PR as a draft, writes build.md
   reviewer.md                      reviews the PR against spec/plan, writes qa.md with a verdict
   conflict-resolver.md             resolves git merge/rebase conflicts, escalates semantic ones
 skills/
@@ -87,6 +87,8 @@ Mode is `auto`, `semi-auto` (the default when you pass no mode word), or `manual
 The axes are independent: a spec with no question in `semi-auto` still auto-approves, and the same spec in `manual` still stops for approval even when no question was raised. A bare `/run-pipeline 142` runs `semi-auto`: it surfaces a real ambiguity but auto-approves clean artifacts.
 
 The QA-gate `revise` in `manual` routes the feedback plus the current `qa.md` to the builder rather than back to the reviewer, because QA's rejection reasoning belongs in the code. In `auto` and `semi-auto`, a QA rejection loops back into build, up to three total build attempts, before leaving the issue at `in-progress` for a human.
+
+The builder opens the pull request as a **draft**, and it stays draft through every build/QA rework round. Only when QA approves and the issue reaches `human-review` does the pipeline flip it to ready for review (`gh pr ready`), so a PR still churning is never presented as ready.
 
 ### Resumability: the question survives the session
 
@@ -184,7 +186,7 @@ Before it merges anything, it checks three gates and surfaces any red one to you
 - **CI** (`gh pr checks`): all-green passes; failing checks are named and you are asked whether to proceed; pending checks are not merged into without asking.
 - **Branch-protection bypass**: if the PR is `BLOCKED` by branch protection and you are a repo administrator who could bypass with `--admin`, the skill asks explicitly before bypassing rules. If you are not an administrator, it stops and reports what is missing.
 
-On success it runs `gh pr merge <pr> --squash --delete-branch`, adding `--admin` only when you authorized a bypass. If the PR maps to a pipeline issue (through `Closes #N` or a local `L`-id), it then marks that issue's `state.json` `closed` in whichever state root holds it (`<repo>.issues/` or `~/.claude/dev-crew/`), on a best-effort basis; for a file-based issue it also moves the issue folder into `<repo>.issues/archive/` so the active set holds only live issues (skipped if already archived). A PR that was not pipeline-driven merges with nothing to close.
+On success it runs `gh pr merge <pr> --squash --delete-branch`, adding `--admin` only when you authorized a bypass. `--delete-branch` removes the remote branch; the skill then cleans up the local side, best-effort and guarded, removing any worktree that held the head branch (at `<repo>.worktrees/<branch>` by convention, but found via `git worktree list`) and deleting the local branch, skipping with a warning on a dirty worktree, the worktree it is currently in, or a branch still checked out elsewhere. If the PR maps to a pipeline issue (through `Closes #N` or a local `L`-id), it then marks that issue's `state.json` `closed` in whichever state root holds it (`<repo>.issues/` or `~/.claude/dev-crew/`), on a best-effort basis; for a file-based issue it also moves the issue folder into `<repo>.issues/archive/` so the active set holds only live issues (skipped if already archived). A PR that was not pipeline-driven merges with nothing to close.
 
 ## The state machine
 

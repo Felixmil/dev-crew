@@ -104,6 +104,44 @@ Add `--admin` **only** when Gate 3's bypass was explicitly authorized.
 Check the exit code: non-zero is a hard failure, report the stderr and do
 not retry with `--admin` to force it unless the user authorized a bypass.
 
+`--delete-branch` deletes the **remote** head branch. The local branch and
+any worktree are cleaned up next.
+
+## Cleaning up the merged branch and worktree (best-effort)
+
+After a successful squash-merge, the head branch's commits are in the base
+branch, so the local head branch and any worktree that held it are dead
+weight. Remove them, but guard every destructive step and never fail the
+merge over this (the merge is the deliverable; this is housekeeping):
+
+1. **The head branch** is `headRefName` from the PR (loaded in Setup).
+2. **Find a worktree for it.** Run `git worktree list --porcelain` and look
+   for a worktree whose branch is `headRefName`. By this toolkit's
+   convention it lives at `<parent>/<repo>.worktrees/<headRefName>/`, but
+   trust `git worktree list` over the convention.
+3. **Remove the worktree, with guards.** Only if a worktree for
+   `headRefName` exists and it is **not the one you are currently in**
+   (compare against `git rev-parse --show-toplevel`): run
+   `git worktree remove <path>`. If it refuses because the worktree is
+   dirty (uncommitted changes unrelated to the merged work), **do not**
+   force it, skip with a warning naming the path so the user can deal with
+   it. Never remove the worktree you are standing in; warn instead.
+4. **Delete the local branch, with guards.** Only after any worktree for it
+   is gone (git will not delete a branch checked out in a live worktree).
+   A squash-merge collapses the branch's commits into a single new commit
+   on base, so `git branch -d <headRefName>` will usually refuse with "not
+   fully merged" (the original commits are not ancestors of base). Because
+   the PR **was** merged, the branch content is safely in base, so
+   `git branch -D <headRefName>` is the right call here. If the branch is
+   still checked out somewhere (the current HEAD, or a worktree you could
+   not remove), skip with a warning rather than forcing.
+5. **If there is no local branch and no worktree** (the PR was merged from
+   a branch you never had locally, common when merging someone else's PR),
+   there is nothing to clean; say so and move on.
+
+Every step here is best-effort: a skipped or failed cleanup is a soft
+warning in your report, never a merge failure.
+
 ## Closing the pipeline issue (best-effort)
 
 A PR may or may not have been driven by a dev-crew pipeline. After a
@@ -147,17 +185,23 @@ merge over this:
 - Treating a transient `UNKNOWN` merge state as a real blocker without
   polling a few times first.
 - Failing the whole action because the pipeline `state.json` could not be
-  closed. The merge is the deliverable; closing state is best-effort.
+  closed, or a branch/worktree could not be cleaned up. The merge is the
+  deliverable; closing state and cleanup are best-effort.
+- Force-removing a **dirty** worktree, or removing the worktree you are
+  currently standing in, or force-deleting a branch still checked out
+  somewhere. Guard each and skip-with-warning instead of forcing.
 - Deciding a gate on the user's behalf. Every red gate is an
   `AskUserQuestion`, with all the context inside the question.
 
 ## Done criteria
 
-The PR is squash-merged and its branch deleted, having passed every gate
-or had each red gate explicitly authorized by the user (CI-red proceed,
-and/or an admin branch-protection bypass). If the PR mapped to a pipeline
-issue, that issue's `state.json` was moved to `closed` (best-effort), and
-for a file-based issue its folder was moved into `<repo>.issues/archive/`
-(best-effort, skipped if already archived). If any gate was red and the
-user declined, nothing was merged and you reported exactly which gate
-stopped it.
+The PR is squash-merged and its remote branch deleted, having passed every
+gate or had each red gate explicitly authorized by the user (CI-red
+proceed, and/or an admin branch-protection bypass). The local head branch
+and any worktree that held it were removed (best-effort, guarded: a dirty
+worktree, the current worktree, or a branch checked out elsewhere is
+skipped with a warning). If the PR mapped to a pipeline issue, that issue's
+`state.json` was moved to `closed` (best-effort), and for a file-based
+issue its folder was moved into `<repo>.issues/archive/` (best-effort,
+skipped if already archived). If any gate was red and the user declined,
+nothing was merged and you reported exactly which gate stopped it.
