@@ -27,6 +27,15 @@
 # policy, minus the task/bug skip-spec fast-path (every issue runs the
 # full spec -> plan -> build -> QA path).
 #
+# The bug pipeline (skills/debug-pipeline) shares this script. It swaps the
+# spec phase for an investigate phase, so it uses a parallel entry segment
+# (open -> investigated) that rejoins the shared path at ready-for-dev, plus
+# an investigate-awaiting-approval manual gate and a terminal not-a-bug
+# early-exit status. The feature pipeline never emits these and the bug
+# pipeline never emits spec-ready; a state.json belongs to whichever pipeline
+# took its first edge, so sharing one script does not let one skill wander
+# into the other's states.
+#
 # The four *-awaiting-approval statuses are gates used only in the
 # skill's manual mode. A gate is entered from the status that precedes a
 # phase and, once a human approves, exits to the exact real status that
@@ -73,6 +82,13 @@ allowed() {
     "open -> spec-ready") return 0 ;;
     "open -> spec-awaiting-approval") return 0 ;;
     "spec-awaiting-approval -> spec-ready") return 0 ;;
+    "open -> investigated") return 0 ;;
+    "open -> investigate-awaiting-approval") return 0 ;;
+    "investigate-awaiting-approval -> investigated") return 0 ;;
+    "investigated -> ready-for-dev") return 0 ;;
+    "investigated -> plan-awaiting-approval") return 0 ;;
+    "open -> not-a-bug") return 0 ;;
+    "investigate-awaiting-approval -> not-a-bug") return 0 ;;
     "spec-ready -> ready-for-dev") return 0 ;;
     "spec-ready -> plan-awaiting-approval") return 0 ;;
     "plan-awaiting-approval -> ready-for-dev") return 0 ;;

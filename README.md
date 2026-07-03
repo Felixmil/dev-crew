@@ -4,34 +4,37 @@ Spec, planner, build, and QA subagents modeled on [OpenDucktor](https://github.c
 
 ## What's here
 
-The plugin ships one crew of agents and two skills that drive an issue through spec, plan, build, and QA. Both pipelines are in-session skills that run the phase loop in the session's own context and drive the same crew; they differ only in where state lives and where artifacts are delivered.
+The plugin ships one crew of agents and three pipeline skills that drive an issue through plan, build, and QA behind a first phase that is either spec (features) or investigate (bugs). All three pipelines are in-session skills that run the phase loop in the session's own context and drive the same crew; they differ in where state lives, where artifacts are delivered, and whether the first phase writes a spec or an investigation.
 
 ```
-agents/                            five subagent definitions, one per job
+agents/                            six subagent definitions, one per job
   spec-writer.md                   turns an issue into a repo-grounded spec.md
-  planner.md                       turns the spec into an ordered plan.md
+  investigator.md                  turns a bug report into a repo-grounded investigation.md (reproduction, root cause)
+  planner.md                       turns the spec/investigation into an ordered plan.md
   builder.md                       implements the plan, opens the PR as a draft, writes build.md
   reviewer.md                      reviews the PR against spec/plan, writes qa.md with a verdict
   conflict-resolver.md             resolves git merge/rebase conflicts, escalates semantic ones
 skills/
   run-pipeline/                    /run-pipeline N [mode]: file-based pipeline; state and artifacts on disk
   run-pipeline-gh/                 /run-pipeline-gh N [mode]: gh-posting pipeline; state hidden and local, artifacts on GitHub
+  debug-pipeline/                  /debug-pipeline N [mode]: bug pipeline; investigate replaces spec, QA confirms the fix
   refine-issue/                    /refine-issue N: interrogate a raw issue before spec work starts
   create-local-issue/              /create-local-issue: make a filesystem-only issue (L1, L2, ...) with no GitHub issue
   update-branch/                   /update-branch [branch]: merge the target in, ask only about semantic conflicts
   address-pr/                      /address-pr N: fix a PR's CI failures and address its valid review comments
   merge-pr/                        /merge-pr N: squash-merge a PR after gating CI, mergeability, and rule bypass
 scripts/
-  pipeline-transition.sh           the only thing allowed to write state.json.status, used by both pipelines
+  pipeline-transition.sh           the only thing allowed to write state.json.status, used by all three pipelines
 drafts/                            inactive; outside the plugin's discovered directories (see drafts/README.md)
 ```
 
-The crew is four job-title agents (spec-writer, planner, builder, reviewer) plus the standalone conflict-resolver. Each agent is lean and file-based: it writes its artifact to a path it is handed and returns a structured result, and it never posts to GitHub. The calling skill decides where the artifact goes and where state lives, which is the one thing that distinguishes the two pipelines:
+The crew is five job-title agents (spec-writer, investigator, planner, builder, reviewer) plus the standalone conflict-resolver. Each agent is lean and file-based: it writes its artifact to a path it is handed and returns a structured result, and it never posts to GitHub. The calling skill decides where the artifact goes, where state lives, and whether the first phase writes a spec or an investigation, which is what distinguishes the three pipelines:
 
 - **The file-based pipeline** (`skills/run-pipeline/`) keeps state in a local `state.json` and leaves every artifact on the local filesystem under `<repo>.issues/<issue>/`. Nothing is posted to the issue thread.
 - **The gh-posting pipeline** (`skills/run-pipeline-gh/`) keeps state in a local `state.json` under `~/.claude/dev-crew/<repo>/<issue>/` and delivers every artifact to GitHub: spec and plan as tagged issue comments, the build summary as the pull request body, QA as a tagged pull request comment.
+- **The bug pipeline** (`skills/debug-pipeline/`) is the file-based pipeline with the spec phase replaced by an investigate phase (the `investigator` writes `investigation.md`) and a bug-aware QA. It shares the file-based pipeline's `<repo>.issues/<issue>/` root.
 
-Both pipelines handle every human decision inline through `AskUserQuestion`. Neither reads or writes a GitHub label, so both run in repos where `status:*` labels are unavailable or you lack rights to create them.
+All three pipelines handle every human decision inline through `AskUserQuestion`. None reads or writes a GitHub label, so all run in repos where `status:*` labels are unavailable or you lack rights to create them.
 
 ## Installation
 
@@ -42,13 +45,13 @@ Install the plugin:
 /plugin install dev-crew@dev-crew
 ```
 
-The marketplace path is the on-disk repo directory; the plugin and marketplace are both named `dev-crew`. After you install it, the five agents (`spec-writer`, `planner`, `builder`, `reviewer`, `conflict-resolver`) are available as `subagent_type`, and every skill (`/run-pipeline`, `/run-pipeline-gh`, `/refine-issue`, `/create-local-issue`, `/update-branch`, `/address-pr`, `/merge-pr`) is available in every project.
+The marketplace path is the on-disk repo directory; the plugin and marketplace are both named `dev-crew`. After you install it, the six agents (`spec-writer`, `investigator`, `planner`, `builder`, `reviewer`, `conflict-resolver`) are available as `subagent_type`, and every skill (`/run-pipeline`, `/run-pipeline-gh`, `/debug-pipeline`, `/refine-issue`, `/create-local-issue`, `/update-branch`, `/address-pr`, `/merge-pr`) is available in every project.
 
 The transition script both pipelines use (`scripts/pipeline-transition.sh`) ships inside the plugin and is invoked through the plugin-root path variable, `"${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-transition.sh"`, so it travels with the install and needs no copying into a target repo.
 
 ### Agent type names are plugin-prefixed
 
-Claude Code namespaces plugin agents with the plugin name, so the agents register as `dev-crew:spec-writer`, `dev-crew:planner`, `dev-crew:builder`, `dev-crew:reviewer`, and `dev-crew:conflict-resolver`. The prefix avoids collisions with same-named agents from other plugins or from a project's own `.claude/agents/`. The skills call the agents by their prefixed names. If you call an agent directly, use the prefixed form; the bare name fails with an "agent type not found" error listing the registered names. A repo that installs the agents locally under its own `.claude/agents/` refers to them by bare name, for example `spec-writer`.
+Claude Code namespaces plugin agents with the plugin name, so the agents register as `dev-crew:spec-writer`, `dev-crew:investigator`, `dev-crew:planner`, `dev-crew:builder`, `dev-crew:reviewer`, and `dev-crew:conflict-resolver`. The prefix avoids collisions with same-named agents from other plugins or from a project's own `.claude/agents/`. The skills call the agents by their prefixed names. If you call an agent directly, use the prefixed form; the bare name fails with an "agent type not found" error listing the registered names. A repo that installs the agents locally under its own `.claude/agents/` refers to them by bare name, for example `spec-writer`.
 
 ## The file-based pipeline
 
@@ -107,6 +110,18 @@ This skill drives exactly one issue; it has no multi-issue launcher. A fleet is 
 Inline questions come with two constraints worth understanding before you dispatch a fleet. First, an inline question has a fixed timeout of about 60 seconds, after which the model is told there was no answer and to proceed on its own judgment; the timeout is not configurable, and an answer given after it fires does not reach the run. Second, in a background session the prompt might not surface to you at all. The skill guards against proceeding on an unchosen default: on any unanswered or timed-out question it stops with the question still recorded in `state.json.pendingQuestion` and the status unchanged, so a re-run re-asks the exact question. It never adopts a default for a question it raised.
 
 The recommendation follows: run `manual` and `semi-auto` issues in the foreground, where you see the question and the 60-second window is a non-issue in practice, and reserve background dispatch for `auto` runs, which raise no question. You can run a `semi-auto` or `manual` issue in the background, and the persist-then-stop behavior keeps it correct if a question is missed, but you might have to re-run it once you notice the "Needs input" row.
+
+## The bug pipeline
+
+`skills/debug-pipeline/SKILL.md` is the bug counterpart to the file-based pipeline. Invoke it as `/debug-pipeline <issue> [mode]`. It drives one bug through `investigate -> plan -> build -> QA`, keeping everything local under the same `<repo>.issues/<issue>/` root and driving the same crew, with two differences from `/run-pipeline`: the spec phase is replaced by an investigate phase, and QA is bug-aware.
+
+The **investigate** phase runs a new `investigator` agent that writes `investigation.md` instead of `spec.md`. Its job is diagnosis, not requirements: it reproduces the bug (running the failing command or test), traces it to a root cause with `file:line` citations, assesses the fix's blast radius, and proposes a regression test. The last line of `investigation.md` is a verdict, `INVESTIGATION-VERDICT: bug-confirmed | not-a-bug | cannot-reproduce`, read from the file rather than the agent's return, the same convention the QA phase uses for `qa.md`. A malformed final line reads as `cannot-reproduce`, never `bug-confirmed`, so a garbled verdict can never silently drive a fix.
+
+A `bug-confirmed` verdict advances to plan and the rest of the pipeline runs exactly as the feature pipeline does, with the planner, builder, and reviewer handed `investigation.md` where they would otherwise get `spec.md`. A `not-a-bug` or `cannot-reproduce` verdict is an **early exit**: the skill surfaces the finding and stops at a terminal `not-a-bug` status before any plan or build work. The issue folder is not auto-archived on an early exit; move it out of the active set by hand if you want.
+
+QA is made **bug-aware** through the reviewer's prompt, not a separate agent: the skill hands the existing reviewer `investigation.md` alongside `plan.md` and one extra instruction, to confirm the reproduction no longer triggers and that a regression test covers it, rejecting the fix if either is missing. The reviewer's `QA-VERDICT: approved|rejected` convention is unchanged.
+
+Everything else matches the file-based pipeline: the same state root and archive, the three modes on the same two orthogonal axes (with the investigate manual gate offering a confirm-early-exit branch on a `not-a-bug` verdict), the resumable `pendingQuestion` flow, `dependsOn` (which spans bugs and features, since both share one root), local `L`-prefixed issues, and the stop at `human-review` for `/merge-pr` to finish. The shared `pipeline-transition.sh` gains a parallel bug entry segment (`open -> investigated`, an `investigate-awaiting-approval` gate, and the terminal `not-a-bug`) that rejoins the feature path at `ready-for-dev`; the feature pipeline never emits those statuses and the bug pipeline never emits `spec-ready`, so one script serves both without either wandering into the other's states.
 
 ## The gh-posting pipeline
 
@@ -190,26 +205,29 @@ On success it runs `gh pr merge <pr> --squash --delete-branch`, adding `--admin`
 
 ## The state machine
 
-Both pipelines share one state machine: state lives in a local `state.json` and moves only through `pipeline-transition.sh`. The `state.json` sits under `<repo>.issues/<issue>/` for the file-based pipeline (next to the artifacts it keeps on disk) and under `~/.claude/dev-crew/<repo>/<issue>/` for the gh-posting pipeline. The script enforces the transition table transcribed from OpenDucktor's `status-transition-policy.ts`, with bare statuses (no `status:` prefix):
+All three pipelines share one state machine: state lives in a local `state.json` and moves only through `pipeline-transition.sh`. The `state.json` sits under `<repo>.issues/<issue>/` for the file-based and bug pipelines (next to the artifacts they keep on disk) and under `~/.claude/dev-crew/<repo>/<issue>/` for the gh-posting pipeline. The script enforces the transition table transcribed from OpenDucktor's `status-transition-policy.ts`, with bare statuses (no `status:` prefix). The feature path and the bug path share the same tail from `ready-for-dev` on, differing only in their first segment:
 
 ```
-open -> spec-ready -> ready-for-dev -> in-progress
-  -> ai-review -> human-review -> closed
+feature: open -> spec-ready ----\
+                                  >-- ready-for-dev -> in-progress
+bug:     open -> investigated ---/      -> ai-review -> human-review -> closed
+
+bug early exit: open -> not-a-bug   (terminal)
 ```
 
-Every issue runs the full spec, plan, build, and QA path. No agent and neither skill writes `state.json.status` directly: only `pipeline-transition.sh` moves the machine, and it refuses any transition not in the table (a transition to the status already in effect is an idempotent no-op). The model that can be talked into anything never holds the pen that moves the state machine.
+Every feature issue runs the full spec, plan, build, and QA path; every bug runs investigate, plan, build, and QA, except that investigate may conclude the report is not a real bug and stop at the terminal `not-a-bug`. No agent and no skill writes `state.json.status` directly: only `pipeline-transition.sh` moves the machine, and it refuses any transition not in the table (a transition to the status already in effect is an idempotent no-op). The model that can be talked into anything never holds the pen that moves the state machine. The feature pipeline never emits `investigated`/`not-a-bug` and the bug pipeline never emits `spec-ready`, so a `state.json` belongs to whichever pipeline took its first edge; sharing one script does not let one skill wander into the other's states.
 
-`manual` mode adds four gate statuses to the table, one per phase: `spec-awaiting-approval`, `plan-awaiting-approval`, `build-awaiting-approval`, and `qa-awaiting-approval`. Each is entered from the status that precedes its phase and exits, on approve, to the real status that phase produces in `auto` mode.
+`manual` mode adds gate statuses to the table, one per phase: `spec-awaiting-approval` (features), `investigate-awaiting-approval` (bugs), `plan-awaiting-approval`, `build-awaiting-approval`, and `qa-awaiting-approval`. Each is entered from the status that precedes its phase and exits, on approve, to the real status that phase produces in `auto` mode.
 
 Nothing here reads or writes a GitHub label, which is what lets the gh-posting pipeline run in repos where `status:*` labels are unavailable or you lack rights to create them: it posts artifacts to GitHub, but its state lives on your disk.
 
 ## Target repo prerequisites
 
-Both pipelines need one thing, and no GitHub labels:
+All three pipelines need one thing, and no GitHub labels:
 
 - The `gh` CLI, authenticated against the repo. The transition script ships with the plugin, so nothing is copied per repo.
 
-The gh-posting pipeline also needs permission to comment on issues and PRs, edit the issue body, and push branches and open PRs, to deliver its artifacts. It needs no `status:*` labels and no label-edit rights. The file-based pipeline needs no GitHub write permission beyond opening the pull request.
+The gh-posting pipeline also needs permission to comment on issues and PRs, edit the issue body, and push branches and open PRs, to deliver its artifacts. It needs no `status:*` labels and no label-edit rights. The file-based pipeline and the bug pipeline need no GitHub write permission beyond opening the pull request.
 
 ## Known gaps versus OpenDucktor
 
@@ -220,4 +238,4 @@ The gh-posting pipeline also needs permission to comment on issues and PRs, edit
 
 ## drafts/
 
-The `drafts/` directory holds inactive files, outside the plugin's discovered directories (`agents/`, `skills/`, `scripts/`), so nothing loads or invokes them. It holds Workflow-script implementations of both pipelines and the GitHub-label state mutator, kept for reference and as a reactivation path. See `drafts/README.md` for what each file is and how to reactivate it.
+The `drafts/` directory holds inactive files, outside the plugin's discovered directories (`agents/`, `skills/`, `scripts/`), so nothing loads or invokes them. It holds Workflow-script implementations of the two run-pipeline variants and the GitHub-label state mutator, kept for reference and as a reactivation path. See `drafts/README.md` for what each file is and how to reactivate it.
