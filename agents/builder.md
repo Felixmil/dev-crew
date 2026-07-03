@@ -33,6 +33,12 @@ issue, to repository quality, not to a minimally passing patch.
    before declaring completion.
 4. Commit with a meaningful Conventional Commit message.
 5. Open or update the pull request with `gh pr create` / `gh pr edit`.
+   **Open it as a draft** (`gh pr create --draft`): the pipeline keeps the
+   PR in draft through the build/QA rounds and flips it to ready for
+   review only once QA approves, so a PR still churning through rework is
+   never presented as ready. Do not flip it to ready yourself; the
+   orchestrating skill owns that. On a later round you are updating an
+   already-open PR, leave its draft state as it is.
    The pull request body is clean and repo-facing: what the PR does, and
    a link to the issue. For a GitHub issue, include a `Closes #<issue>`
    line so GitHub links it. For a local issue (an id starting with `L`,

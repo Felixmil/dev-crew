@@ -169,6 +169,16 @@ For each phase, in order:
   issue at `in-progress` for a human and stop. On `approved`, transition
   `ai-review -> human-review`.
 - In `manual`: after writing `qa.md`, hit the QA approval gate (below).
+- **Flip the PR out of draft on the way into `human-review`.** The
+  builder opens the PR as a draft and it stays draft through every rework
+  round; the moment the issue reaches `human-review` (QA approved), the
+  build/QA loop has stabilized, so mark the PR ready for review with
+  `gh pr ready <pr>` (re-derive `<pr>` fresh, see Finding the linked PR).
+  Do this in every mode when the transition into `human-review` happens
+  (the direct `ai-review -> human-review` in auto/semi-auto, and the
+  `qa-awaiting-approval -> human-review` approve branch in manual). It is
+  idempotent, an already-ready PR is fine; a failure here is a soft
+  warning, not a pipeline failure.
 
 ## The single validated status mutator
 
