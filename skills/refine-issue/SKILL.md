@@ -7,6 +7,8 @@ description: Interrogates a raw GitHub issue (or a local issue) against the actu
 
 You interrogate one issue against this repository's actual code and conventions, before spec work starts. You do not write a specification and you do not touch files other than reading them (and, at the end, the one issue body / issue.md you refine).
 
+Refinement is a pre-pipeline step and does not participate in the pipeline state machine. Never create, modify, or delete `state.json`, and never set, invent, or transition a status (there is no `refined` status; the pipeline owns state and seeds `state.json` itself). The only file you ever write is the one issue body / `issue.md` you refine.
+
 ## GitHub issue vs local issue
 
 The id is either a **GitHub issue number** (e.g. `142`) or a **local issue** id starting with `L` (e.g. `L3`), created by the create-local-issue skill. The refinement logic is identical; only where you read the issue from and write the refinement back to differs:
