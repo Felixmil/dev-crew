@@ -17,7 +17,7 @@ agents/                            six subagent definitions, one per job
 skills/
   run-pipeline/                    /run-pipeline N [mode]: file-based pipeline; state and artifacts on disk
   run-pipeline-gh/                 /run-pipeline-gh N [mode]: gh-posting pipeline; state hidden and local, artifacts on GitHub
-  debug-pipeline/                  /debug-pipeline N [mode]: bug pipeline; investigate replaces spec, QA confirms the fix
+  debug-pipeline/                  /debug-pipeline N [mode]: bug pipeline; investigate replaces spec, QA checks the regression test
   refine-issue/                    /refine-issue N: interrogate a raw issue before spec work starts
   create-local-issue/              /create-local-issue: make a filesystem-only issue (L1, L2, ...) with no GitHub issue
   update-branch/                   /update-branch [branch]: merge the target in, ask only about semantic conflicts
@@ -119,7 +119,7 @@ The **investigate** phase runs a new `investigator` agent that writes `investiga
 
 A `bug-confirmed` verdict advances to plan and the rest of the pipeline runs exactly as the feature pipeline does, with the planner, builder, and reviewer handed `investigation.md` where they would otherwise get `spec.md`. A `not-a-bug` or `cannot-reproduce` verdict is an **early exit**: the skill surfaces the finding and stops at a terminal `not-a-bug` status before any plan or build work. The issue folder is not auto-archived on an early exit; move it out of the active set by hand if you want.
 
-QA is made **bug-aware** through the reviewer's prompt, not a separate agent: the skill hands the existing reviewer `investigation.md` alongside `plan.md` and one extra instruction, to confirm the reproduction no longer triggers and that a regression test covers it, rejecting the fix if either is missing. The reviewer's `QA-VERDICT: approved|rejected` convention is unchanged.
+QA is made **bug-aware** through the reviewer's prompt, not a separate agent: the skill hands the existing reviewer `investigation.md` alongside `plan.md` and one extra instruction, to verify from the diff that a regression test exists and covers the root cause cited in `investigation.md`, rejecting the fix if it does not. The reviewer reasons from the diff and does not re-run the reproduction (its tooling is read-only). The reviewer's `QA-VERDICT: approved|rejected` convention is unchanged.
 
 Everything else matches the file-based pipeline: the same state root and archive, the three modes on the same two orthogonal axes (with the investigate manual gate offering a confirm-early-exit branch on a `not-a-bug` verdict), the resumable `pendingQuestion` flow, `dependsOn` (which spans bugs and features, since both share one root), local `L`-prefixed issues, and the stop at `human-review` for `/merge-pr` to finish. The shared `pipeline-transition.sh` gains a parallel bug entry segment (`open -> investigated`, an `investigate-awaiting-approval` gate, and the terminal `not-a-bug`) that rejoins the feature path at `ready-for-dev`; the feature pipeline never emits those statuses and the bug pipeline never emits `spec-ready`, so one script serves both without either wandering into the other's states.
 

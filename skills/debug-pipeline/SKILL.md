@@ -1,6 +1,6 @@
 ---
 name: debug-pipeline
-description: Drives one bug (a GitHub issue number, or a local L-prefixed issue) through investigate -> plan -> build -> QA, keeping the four artifacts and the state machine on the local filesystem under <repo>.issues/<issue>/ and all human interaction inline in this session. It is the bug counterpart to /run-pipeline: the spec phase is replaced by an investigate phase that reproduces and root-causes the bug, and QA additionally confirms the reproduction is gone. The issue is the input; a pull request is the ship channel; nothing is posted to the issue thread. Use when the user says "debug N", "run the debug pipeline on N", "investigate and fix bug N", passes a mode (auto/semi-auto/manual), or invokes /debug-pipeline with an issue number.
+description: Drives one bug (a GitHub issue number, or a local L-prefixed issue) through investigate -> plan -> build -> QA, keeping the four artifacts and the state machine on the local filesystem under <repo>.issues/<issue>/ and all human interaction inline in this session. It is the bug counterpart to /run-pipeline: the spec phase is replaced by an investigate phase that reproduces and root-causes the bug, and QA additionally confirms a regression test covers the cited root cause. The issue is the input; a pull request is the ship channel; nothing is posted to the issue thread. Use when the user says "debug N", "run the debug pipeline on N", "investigate and fix bug N", passes a mode (auto/semi-auto/manual), or invokes /debug-pipeline with an issue number.
 ---
 
 # Bug pipeline
@@ -8,7 +8,8 @@ description: Drives one bug (a GitHub issue number, or a local L-prefixed issue)
 You drive one bug issue through investigate -> plan -> build -> QA. This
 is the bug counterpart to `/run-pipeline`: the spec phase is replaced by
 an **investigate** phase that reproduces the bug and traces it to its root
-cause, and QA additionally confirms the bug is actually gone. Everything
+cause, and QA additionally confirms a regression test covers that root
+cause so the bug cannot silently return. Everything
 else, the state machine, the modes, the resumable question flow, the
 filesystem layout, is identical to `/run-pipeline`.
 
@@ -75,9 +76,10 @@ not a bug and stop the pipeline early.
    it, in which case they should move it back out of `archive/`
    themselves). Otherwise, create `<root>/<issue>/` if it does not exist
    (`mkdir -p`). If `<root>/<issue>/state.json` does not exist, seed it
-   with `{"status": "open", "mode": "<mode>", "prNumber": null,
-   "qaVerdict": null, "investigationVerdict": null, "pendingQuestion":
-   null, "dependsOn": []}` (the mode from step 1). Never `git add` this
+   with `{"status": "open", "mode": "<mode>", "branch": null,
+   "prNumber": null, "qaVerdict": null, "investigationVerdict": null,
+   "pendingQuestion": null, "dependsOn": []}` (the mode from step 1).
+   Never `git add` this
    folder or any file in it; it lives outside the repo tree by
    construction.
 4. **Reconcile mode.** If `state.json` already existed and the caller
@@ -196,12 +198,43 @@ For each phase, in order:
 
 ### Build phase specifics
 
+- **Set up the dedicated branch and isolated worktree first**, before the
+  entry transition and before invoking the builder. The build always runs
+  on its own branch inside its own worktree, never in the main checkout or
+  on the current branch. This step is idempotent and resume-safe: on a
+  rework round or a resumed run the branch and worktree already exist, so
+  reuse them rather than recreating.
+  - **Branch name.** Reuse `state.json.branch` if it is already set (a
+    resume or a rework round). Otherwise derive a flat, issue-linked name
+    from the issue number and a short slug of the issue title:
+    `<issue>-<slug>` for a GitHub issue (e.g. `142-crash-on-empty`),
+    `<id>-<slug>` for a local issue (e.g. `L3-cache-key`). Keep it flat:
+    no `fix/`, `feat/`, or `issue-NN/` prefix. Lowercase the slug, replace
+    runs of non-alphanumerics with a single `-`, trim to a few words.
+    Write the chosen name to `state.json.branch` so every later round and
+    the `/merge-pr` teardown resolve the same branch.
+  - **Worktree path.** Derive the repo's main-checkout parent as in the
+    state-root step (`<parent>`, `<repo>`); the worktree lives at
+    `<parent>/<repo>.worktrees/<branch>/`, matching the toolkit's worktree
+    convention and where `/merge-pr` looks to tear it down.
+  - **Create idempotently.** If `git worktree list --porcelain` already
+    has a worktree for `<branch>`, reuse it. Otherwise create it off the
+    base branch: `git worktree add -b <branch> <parent>/<repo>.worktrees/<branch> <base>`
+    (use `git worktree add <path> <branch>` without `-b` if the branch
+    already exists but has no worktree). `<base>` is the repo's default
+    branch. Never create the worktree inside the repo root.
 - The entry transition is its own step: from `ready-for-dev` or
   `blocked`, first transition to `in-progress` (the script has no
   `ready-for-dev -> ai-review` edge); if already at `in-progress`, skip
   that (there is no `in-progress -> in-progress` edge). The agent runs,
   opens/updates the PR with a clean `Closes #<issue>` body, writes
   `build.md`, then you transition `in-progress -> ai-review`.
+- **Hand the builder the worktree path.** When you invoke the build agent,
+  pass the absolute worktree path (`<parent>/<repo>.worktrees/<branch>/`)
+  as the worktree it must `cd` into and work in, alongside the artifact
+  paths. The builder does not create its own branch or worktree; it works
+  where you put it and opens the PR from that branch. This same worktree is
+  reused for every QA rework round.
 - Record the PR number: after the build agent returns, re-derive the
   linked PR (see Finding the linked PR) and write it to
   `state.json.prNumber` as a cache. Never trust a stored `prNumber` over
@@ -211,11 +244,13 @@ For each phase, in order:
 
 - The reviewer is invoked **bug-aware**: hand it `investigation.md` and
   `plan.md`, plus this extra instruction in the prompt: "This is a bug
-  fix. Beyond mapping the diff to the plan, confirm the reproduction in
-  investigation.md no longer triggers, and that a regression test covers
-  it. If the reproduction still triggers or no regression test exists, the
-  verdict is rejected." The reviewer's `QA-VERDICT: approved|rejected`
-  last-line convention is unchanged.
+  fix. Beyond mapping the diff to the plan, verify from the diff that a
+  regression test exists and that it covers the root cause cited in
+  investigation.md, so the bug cannot silently return. If no regression
+  test covers the cited root cause, the verdict is rejected." The reviewer
+  reasons from the diff; it does not re-run the reproduction (its tooling
+  is read-only). The reviewer's `QA-VERDICT: approved|rejected` last-line
+  convention is unchanged.
 - Read the verdict from the last `QA-VERDICT:` line of `qa.md`, not from
   the agent's return.
 - In `auto`/`semi-auto`: on `rejected`, route `qa.md` plus the rejection
@@ -251,9 +286,9 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-transition.sh" <root> <issue> <to-s
   transition, or a missing state file): surface it, do not swallow it,
   do not retry with a different target to force it through.
 - You **do** directly write the other `state.json` fields (`mode`,
-  `prNumber`, `qaVerdict`, `investigationVerdict`, `pendingQuestion`,
-  `dependsOn`) with `jq`/an edit, since those are not the state machine
-  and have no transition rules. Only `status` is gated.
+  `branch`, `prNumber`, `qaVerdict`, `investigationVerdict`,
+  `pendingQuestion`, `dependsOn`) with `jq`/an edit, since those are not
+  the state machine and have no transition rules. Only `status` is gated.
 - Statuses are bare (no `status:` prefix). The bug pipeline uses: `open`,
   `investigated`, `ready-for-dev`, `in-progress`, `blocked`, `ai-review`,
   `human-review`, `closed`, the terminal `not-a-bug`, and the four gates

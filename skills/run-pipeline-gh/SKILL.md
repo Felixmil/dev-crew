@@ -63,8 +63,8 @@ label and never from what you remember of this conversation.
      `state.json`.
 3. **Bootstrap the issue folder.** If `<root>/<issue>/state.json` does
    not exist, seed it with `{"status": "open", "mode": "<mode>",
-   "prNumber": null, "qaVerdict": null, "pendingQuestion": null,
-   "dependsOn": []}` (the mode from step 1).
+   "branch": null, "prNumber": null, "qaVerdict": null,
+   "pendingQuestion": null, "dependsOn": []}` (the mode from step 1).
 4. **Reconcile mode.** If `state.json` already existed and the caller
    passed no mode word, use the persisted `state.json.mode`. If the
    caller passed a mode word, write it into `state.json.mode` (a rerun
@@ -145,6 +145,38 @@ For each phase, in order:
 
 ### Build phase specifics
 
+- **Set up the dedicated branch and isolated worktree first**, before the
+  entry transition and before invoking the builder. The build always runs
+  on its own branch inside its own worktree, never in the main checkout or
+  on the current branch. This step is idempotent and resume-safe: on a
+  rework round or a resumed run the branch and worktree already exist, so
+  reuse them rather than recreating.
+  - **Branch name.** Reuse `state.json.branch` if it is already set (a
+    resume or a rework round). Otherwise derive a flat, issue-linked name
+    from the issue number and a short slug of the issue title:
+    `<issue>-<slug>` for a GitHub issue (e.g. `142-pkpd-warning`),
+    `<id>-<slug>` for a local issue (e.g. `L3-cache-key`). Keep it flat:
+    no `fix/`, `feat/`, or `issue-NN/` prefix. Lowercase the slug, replace
+    runs of non-alphanumerics with a single `-`, trim to a few words.
+    Write the chosen name to `state.json.branch` so every later round and
+    the `/merge-pr` teardown resolve the same branch.
+  - **Worktree path.** Derive the repo's main-checkout parent as in the
+    state-root step (`<parent>`, `<repo>`); the worktree lives at
+    `<parent>/<repo>.worktrees/<branch>/`, matching the toolkit's worktree
+    convention and where `/merge-pr` looks to tear it down.
+  - **Create idempotently.** If `git worktree list --porcelain` already
+    has a worktree for `<branch>`, reuse it. Otherwise create it off the
+    base branch: `git worktree add -b <branch> <parent>/<repo>.worktrees/<branch> <base>`
+    (use `git worktree add <path> <branch>` without `-b` if the branch
+    already exists but has no worktree). `<base>` is the repo's default
+    branch. Never create the worktree inside the repo root.
+  - **Hand the builder the worktree path.** When you invoke the build
+    agent, pass the absolute worktree path
+    (`<parent>/<repo>.worktrees/<branch>/`) as the worktree it must `cd`
+    into and work in, alongside the artifact paths. The builder does not
+    create its own branch or worktree; it works where you put it and opens
+    the PR from that branch. This same worktree is reused for every QA
+    rework round.
 - The entry transition is its own step: from `ready-for-dev` or
   `blocked`, first transition to `in-progress` (the script has no
   `ready-for-dev -> ai-review` edge); if already at `in-progress`, skip
@@ -152,8 +184,10 @@ For each phase, in order:
   opens/updates the PR with a clean `Closes #<issue>` body of its own,
   and writes `build.md`. Then **you** deliver: on the first build pass,
   overlay `build.md` as the PR body via `gh pr edit <pr> --body-file
-  <file>` (the fuller "what this PR does"); on every later round (a
-  QA-rejection fixup or a manual build-gate revise) reply with
+  <file>` (the fuller "what this PR does"), prepending a `Closes #<issue>`
+  line so the overlay does not strip the issue link the builder's original
+  body carried (see "Delivering an artifact to GitHub"); on every later
+  round (a QA-rejection fixup or a manual build-gate revise) reply with
   `build.md` as an ordinary PR comment via `gh pr comment <pr>
   --body-file <file>` instead of re-editing the body. Finally transition
   `in-progress -> ai-review`.
@@ -209,9 +243,9 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-transition.sh" <root> <issue> <to-s
 - The script reads the current status from `state.json` itself and
   validates the edge; you only name the target.
 - You **do** directly write the other `state.json` fields (`mode`,
-  `prNumber`, `qaVerdict`, `pendingQuestion`, `dependsOn`) with `jq`/an
-  edit, since those are not the state machine and have no transition
-  rules. Only `status` is gated.
+  `branch`, `prNumber`, `qaVerdict`, `pendingQuestion`, `dependsOn`) with
+  `jq`/an edit, since those are not the state machine and have no
+  transition rules. Only `status` is gated.
 - Statuses are bare (no `status:` prefix): `open`, `spec-ready`,
   `ready-for-dev`, `in-progress`, `blocked`, `ai-review`,
   `human-review`, `closed`, and the four manual-mode gates
@@ -236,9 +270,15 @@ notify @-mention) and then appending the scratch artifact verbatim:
   the last comment carrying that phase's tag and `PATCH` its body, adding
   a short "What changed" note at the top.
 - **build, first pass** -> the **PR body**. `gh pr edit <pr>
-  --body-file <file>` with `build.md` as the body. (The builder already
-  opened the PR with a clean `Closes #<issue>` body; this overlays the
-  fuller summary.)
+  --body-file <file>` with `build.md` as the body. The builder opened the
+  PR with a clean `Closes #<issue>` body, but `build.md` is a separate,
+  fuller document that carries no `Closes` line, so overlaying it verbatim
+  would strip the issue link and break the `closedByPullRequestsReferences`
+  lookup this skill relies on (see "Finding the linked PR"). **Prepend a
+  `Closes #<issue>` line** (for a local `L`-id, the local-id reference
+  instead, which has no `Closes`) to the temp body before `build.md`, so
+  the overlay preserves the link. Skip this for a local issue, which has
+  no `Closes` link to preserve.
 - **build, later rounds** -> a **PR comment**. `gh pr comment <pr>
   --body-file <file>` with the fresh `build.md`.
 - **QA** -> a **tagged PR comment** (`<!-- gh-pipeline:qa -->`). `gh pr

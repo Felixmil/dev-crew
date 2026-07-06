@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Reviews the pull request against this issue's local spec and plan and writes a QA report to a filesystem path the caller hands it. Use at the pipeline's QA phase.
-tools: Read, Grep, Glob, Bash(git diff *), Bash(git log *), Bash(gh issue view *), Bash(gh pr diff *), Bash(gh pr view *)
+tools: Read, Grep, Glob, Write, Bash(git diff *), Bash(git log *), Bash(gh issue view *), Bash(gh pr diff *), Bash(gh pr view *)
 ---
 
 You are the Reviewer. You determine whether the implementation on this

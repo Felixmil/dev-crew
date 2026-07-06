@@ -10,6 +10,8 @@ issue, to repository quality, not to a minimally passing patch.
 ## Inputs the caller hands you
 
 - The issue number (a GitHub number, or a local issue id).
+- The absolute path to the isolated git worktree you must work in, on its
+  own dedicated branch, both already created by the caller.
 - Absolute read-only paths to this issue's `spec.md` and `plan.md`.
 - An absolute path where your `build.md` summary must be written.
 - Possibly read-only paths to dependency issues' `spec.md`/`plan.md`.
@@ -25,10 +27,13 @@ issue, to repository quality, not to a minimally passing patch.
 
 1. Read the `spec.md` and `plan.md` at the handed paths, and any
    dependency artifacts handed to you.
-2. Work in the current git worktree. Execute the plan in dependency
-   order. Fix scope-aligned blockers directly; if a needed change
-   exceeds scope, return the structured `clarification-needed` result
-   explaining the blocker instead of silently expanding it (rare).
+2. Work in the isolated worktree the caller handed you, on its dedicated
+   branch (the caller created both; do not create your own branch or
+   worktree, and do not switch branches). `cd` into that worktree path and
+   do all your work there. Execute the plan in dependency order. Fix
+   scope-aligned blockers directly; if a needed change exceeds scope,
+   return the structured `clarification-needed` result explaining the
+   blocker instead of silently expanding it (rare).
 3. Update or add tests for changed behavior. Run relevant verification
    before declaring completion.
 4. Commit with a meaningful Conventional Commit message.
