@@ -25,6 +25,7 @@ skills/
   merge-pr/                        /merge-pr N: squash-merge a PR after gating CI, mergeability, and rule bypass
 scripts/
   pipeline-transition.sh           the only thing allowed to write state.json.status, used by all three pipelines
+  pipeline-rename-job.sh           renames the background job to "#N <slug>" so parallel pipeline runs are legible
 drafts/                            inactive; outside the plugin's discovered directories (see drafts/README.md)
 ```
 
@@ -48,6 +49,8 @@ Install the plugin:
 The marketplace path is the on-disk repo directory; the plugin and marketplace are both named `dev-crew`. After you install it, the six agents (`spec-writer`, `investigator`, `planner`, `builder`, `reviewer`, `conflict-resolver`) are available as `subagent_type`, and every skill (`/run-pipeline`, `/run-pipeline-gh`, `/debug-pipeline`, `/refine-issue`, `/create-local-issue`, `/update-branch`, `/address-pr`, `/merge-pr`) is available in every project.
 
 The transition script both pipelines use (`scripts/pipeline-transition.sh`) ships inside the plugin and is invoked through the plugin-root path variable, `"${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-transition.sh"`, so it travels with the install and needs no copying into a target repo.
+
+Each of the three pipelines also renames its own background job at setup time, via `scripts/pipeline-rename-job.sh <issue> "<title>"` (invoked through the same plugin-root path variable). It writes a clean `#<issue> <slug>` title (a bare `<id> <slug>` for a local `L`-prefixed issue) into the running job's `state.json` and pins it, so a wall of parallel pipeline runs is legible at a glance instead of each carrying an auto-generated name derived from its first prompt. It is a silent no-op when there is no background job (a foreground run).
 
 ### Agent type names are plugin-prefixed
 

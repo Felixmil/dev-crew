@@ -69,6 +69,18 @@ label and never from what you remember of this conversation.
    passed no mode word, use the persisted `state.json.mode`. If the
    caller passed a mode word, write it into `state.json.mode` (a rerun
    may legitimately change the mode).
+5. **Rename this background job** to a clean, issue-derived title so a
+   wall of parallel pipeline runs is legible at a glance. Fetch the issue
+   title with `gh issue view <issue> --json title --jq .title`, then shell
+   out to the rename script:
+   ```
+   bash "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-rename-job.sh" <issue> "<title>"
+   ```
+   The script writes `#<issue> <slug>` into the running job's title and
+   pins it. It is a silent no-op in a foreground run (no background job to
+   rename) and a soft step overall: a non-zero exit or an unfetchable
+   title is a warning, not a pipeline failure, so never let it block the
+   phase loop.
 
 ## Resume a pending question first (before any phase)
 

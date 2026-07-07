@@ -1,7 +1,7 @@
 {
   "name": "dev-crew",
   "description": "A crew of spec-writer, investigator, planner, builder, and reviewer subagents (modeled on OpenDucktor's agent workflow) that drive an issue through spec (or investigate, for bugs) -> plan -> build -> QA, plus skills to refine an issue, run the pipeline, debug a bug, update a branch (resolving conflicts), create a local issue, address a PR, and merge a PR. Each agent works in a file-based or GitHub output mode.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "author": {
     "name": "Felix Mil"
   },
