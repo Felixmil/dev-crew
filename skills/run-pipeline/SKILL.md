@@ -150,8 +150,10 @@ For each phase, in order:
    answer is in hand.
 5. **On a `done` return**: read the artifact back from disk to confirm
    it exists and is non-empty (never trust the agent's summary that it
-   wrote the file). For QA, parse the trailing `QA-VERDICT:` line from
-   `qa.md` itself and record it in `state.json.qaVerdict`.
+   wrote the file). For QA, parse the trailing line matching `QA-VERDICT:`
+   from `qa.md` itself (it is an HTML comment, `<!-- QA-VERDICT: approved
+   -->` / `<!-- QA-VERDICT: rejected -->`; read the verdict word out of
+   the last such line) and record it in `state.json.qaVerdict`.
 6. **Artifact-approval gate** (see the modes section): in `manual` mode,
    stop for an approve/revise decision before advancing; in
    `auto`/`semi-auto`, advance immediately.
@@ -205,8 +207,9 @@ For each phase, in order:
 
 ### QA phase specifics
 
-- Read the verdict from the last `QA-VERDICT:` line of `qa.md`, not from
-  the agent's return.
+- Read the verdict from the last line matching `QA-VERDICT:` in `qa.md`
+  (the `<!-- QA-VERDICT: ... -->` HTML comment), not from the agent's
+  return.
 - In `auto`/`semi-auto`: on `rejected`, route `qa.md` plus the rejection
   back to the **build** agent as fixup feedback, transition `ai-review
   -> in-progress`, re-run build, transition back to `ai-review`, re-run

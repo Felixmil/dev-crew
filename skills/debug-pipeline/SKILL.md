@@ -174,8 +174,11 @@ For each phase, in order:
    it exists and is non-empty (never trust the agent's summary that it
    wrote the file). For the investigate phase, parse the trailing
    `INVESTIGATION-VERDICT:` line from `investigation.md` itself (see the
-   Investigate phase specifics). For QA, parse the trailing `QA-VERDICT:`
-   line from `qa.md` itself and record it in `state.json.qaVerdict`.
+   Investigate phase specifics). For QA, parse the trailing line matching
+   `QA-VERDICT:` from `qa.md` itself (it is an HTML comment, `<!--
+   QA-VERDICT: approved -->` / `<!-- QA-VERDICT: rejected -->`; read the
+   verdict word out of the last such line) and record it in
+   `state.json.qaVerdict`.
 6. **Artifact-approval gate** (see the modes section): in `manual` mode,
    stop for an approve/revise decision before advancing; in
    `auto`/`semi-auto`, advance immediately.
@@ -262,10 +265,11 @@ For each phase, in order:
   investigation.md, so the bug cannot silently return. If no regression
   test covers the cited root cause, the verdict is rejected." The reviewer
   reasons from the diff; it does not re-run the reproduction (its tooling
-  is read-only). The reviewer's `QA-VERDICT: approved|rejected` last-line
-  convention is unchanged.
-- Read the verdict from the last `QA-VERDICT:` line of `qa.md`, not from
-  the agent's return.
+  is read-only). The reviewer's `<!-- QA-VERDICT: approved|rejected -->`
+  HTML-comment last-line convention is unchanged.
+- Read the verdict from the last line matching `QA-VERDICT:` in `qa.md`
+  (the `<!-- QA-VERDICT: ... -->` HTML comment), not from the agent's
+  return.
 - In `auto`/`semi-auto`: on `rejected`, route `qa.md` plus the rejection
   back to the **build** agent as fixup feedback, transition `ai-review
   -> in-progress`, re-run build, transition back to `ai-review`, re-run

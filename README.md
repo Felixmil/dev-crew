@@ -32,7 +32,7 @@ drafts/                            inactive; outside the plugin's discovered dir
 The crew is five job-title agents (spec-writer, investigator, planner, builder, reviewer) plus the standalone conflict-resolver. Each agent is lean and file-based: it writes its artifact to a path it is handed and returns a structured result, and it never posts to GitHub. The calling skill decides where the artifact goes, where state lives, and whether the first phase writes a spec or an investigation, which is what distinguishes the three pipelines:
 
 - **The file-based pipeline** (`skills/run-pipeline/`) keeps state in a local `state.json` and leaves every artifact on the local filesystem under `<repo>.issues/<issue>/`. Nothing is posted to the issue thread.
-- **The gh-posting pipeline** (`skills/run-pipeline-gh/`) keeps state in a local `state.json` under `~/.claude/dev-crew/<repo>/<issue>/` and delivers every artifact to GitHub: spec and plan as tagged issue comments, the build summary as the pull request body, QA as a tagged pull request comment.
+- **The gh-posting pipeline** (`skills/run-pipeline-gh/`) keeps state in a local `state.json` under `~/.claude/dev-crew/<repo>/<issue>/` and delivers every artifact to GitHub: spec and plan as tagged issue comments, and the build summary, the QA report, and every build/QA rework round assembled into the pull request body, which the skill rebuilds from its parts each round.
 - **The bug pipeline** (`skills/debug-pipeline/`) is the file-based pipeline with the spec phase replaced by an investigate phase (the `investigator` writes `investigation.md`) and a bug-aware QA. It shares the file-based pipeline's `<repo>.issues/<issue>/` root.
 
 All three pipelines handle every human decision inline through `AskUserQuestion`. None reads or writes a GitHub label, so all run in repos where `status:*` labels are unavailable or you lack rights to create them.
@@ -73,7 +73,7 @@ State lives next to the repo, never inside it. The skill derives the root from g
     spec.md       written by spec-writer
     plan.md       written by planner
     build.md      the fuller build summary, a separate document from the PR body
-    qa.md         the QA report, ending in one "QA-VERDICT: approved|rejected" line
+    qa.md         the QA report (verdict header, summary, foldable details), ending in one "<!-- QA-VERDICT: approved|rejected -->" line
   archive/        merged issues, moved out of the active set by /merge-pr
     128/          same five files, kept as a read-only record after the merge
       ...
@@ -122,7 +122,7 @@ The **investigate** phase runs a new `investigator` agent that writes `investiga
 
 A `bug-confirmed` verdict advances to plan and the rest of the pipeline runs exactly as the feature pipeline does, with the planner, builder, and reviewer handed `investigation.md` where they would otherwise get `spec.md`. A `not-a-bug` or `cannot-reproduce` verdict is an **early exit**: the skill surfaces the finding and stops at a terminal `not-a-bug` status before any plan or build work. The issue folder is not auto-archived on an early exit; move it out of the active set by hand if you want.
 
-QA is made **bug-aware** through the reviewer's prompt, not a separate agent: the skill hands the existing reviewer `investigation.md` alongside `plan.md` and one extra instruction, to verify from the diff that a regression test exists and covers the root cause cited in `investigation.md`, rejecting the fix if it does not. The reviewer reasons from the diff and does not re-run the reproduction (its tooling is read-only). The reviewer's `QA-VERDICT: approved|rejected` convention is unchanged.
+QA is made **bug-aware** through the reviewer's prompt, not a separate agent: the skill hands the existing reviewer `investigation.md` alongside `plan.md` and one extra instruction, to verify from the diff that a regression test exists and covers the root cause cited in `investigation.md`, rejecting the fix if it does not. The reviewer reasons from the diff and does not re-run the reproduction (its tooling is read-only). The reviewer's `<!-- QA-VERDICT: approved|rejected -->` verdict convention is unchanged.
 
 Everything else matches the file-based pipeline: the same state root and archive, the three modes on the same two orthogonal axes (with the investigate manual gate offering a confirm-early-exit branch on a `not-a-bug` verdict), the resumable `pendingQuestion` flow, `dependsOn` (which spans bugs and features, since both share one root), local `L`-prefixed issues, and the stop at `human-review` for `/merge-pr` to finish. The shared `pipeline-transition.sh` gains a parallel bug entry segment (`open -> investigated`, an `investigate-awaiting-approval` gate, and the terminal `not-a-bug`) that rejoins the feature path at `ready-for-dev`; the feature pipeline never emits those statuses and the bug pipeline never emits `spec-ready`, so one script serves both without either wandering into the other's states.
 
@@ -136,7 +136,7 @@ The skill stores its state machine in a `state.json` under `~/.claude/dev-crew/<
 
 ### Where each artifact goes
 
-Spec and plan are posted as tagged issue comments (`<!-- gh-pipeline:spec -->` and `<!-- gh-pipeline:plan -->`), because no pull request exists yet. The build's first-pass summary becomes the pull request body (`gh pr edit --body-file`); later build rounds reply as a pull request comment. QA is a tagged pull request comment (`<!-- gh-pipeline:qa -->`). Every post goes through `--body-file`, which writes the artifact to a temp file and posts from it and sidesteps shell-quoting problems on long markdown. The linked PR is re-derived each time through the `Closes #N` GraphQL lookup, never trusted from memory.
+Spec and plan are posted as tagged issue comments (`<!-- gh-pipeline:spec -->` and `<!-- gh-pipeline:plan -->`), because no pull request exists yet. The build summary and the QA report both live in the **pull request body**: the skill owns the body and rebuilds it in full on every build and QA delivery (`gh pr edit --body-file`), never a pull request comment. The body reads top to bottom as `Closes #N`, then the build summary (the "what this PR does" content), then the QA block (a `# QA: Approved`/`# QA: Rejected` verdict header, a short summary, and a foldable `<details>` holding the full report), then a `# Updates` section that grows one `## Changes` / `## QA` pair per build/QA rework round. Rebuilding from saved parts each round (rather than splicing the live body) keeps the result deterministic and resume-safe. Every write goes through `--body-file`, which writes the body to a temp file and posts from it and sidesteps shell-quoting problems on long markdown. The linked PR is re-derived each time through the `Closes #N` GraphQL lookup, never trusted from memory.
 
 ### Gates
 
@@ -230,12 +230,12 @@ All three pipelines need one thing, and no GitHub labels:
 
 - The `gh` CLI, authenticated against the repo. The transition script ships with the plugin, so nothing is copied per repo.
 
-The gh-posting pipeline also needs permission to comment on issues and PRs, edit the issue body, and push branches and open PRs, to deliver its artifacts. It needs no `status:*` labels and no label-edit rights. The file-based pipeline and the bug pipeline need no GitHub write permission beyond opening the pull request.
+The gh-posting pipeline also needs permission to comment on issues (for spec and plan), edit the pull request body (where the build summary and QA report live), and push branches and open PRs, to deliver its artifacts. It needs no `status:*` labels and no label-edit rights. The file-based pipeline and the bug pipeline need no GitHub write permission beyond opening the pull request.
 
 ## Known gaps versus OpenDucktor
 
 - No worktree isolation between build and QA by default. Pass `isolation: "worktree"` to the builder invocation in a pipeline if agents run concurrently and might collide.
-- The QA verdict is a `QA-VERDICT: approved|rejected` string convention read from the last line of `qa.md`, not a typed tool call. A malformed final line reads as `rejected`.
+- The QA verdict is a `<!-- QA-VERDICT: approved|rejected -->` HTML-comment string convention read from the last line of `qa.md` (an HTML comment so it does not render in the pull request body), not a typed tool call. A malformed final line reads as `rejected`.
 - No cross-issue coherence check. Each issue is planned and built on its own; nothing detects two issues whose specs contradict each other. OpenDucktor's own state machine does not either, beyond blocking an epic from closing while a subtask is open.
 - No canonical task-summary object. Each agent re-reads the full issue thread (or, for build and QA, the pull request thread) through `gh issue view --comments` or `gh pr view --json comments` rather than a cached document-presence summary.
 

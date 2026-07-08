@@ -1,6 +1,6 @@
 ---
 name: run-pipeline-gh
-description: Drives one GitHub issue through spec -> plan -> build -> QA, keeping the state machine in a LOCAL state.json under ~/.claude/dev-crew/<repo>/<issue>/ (a hidden, persistent, Claude-standard location; no GitHub labels, so it works where status:* labels are unavailable or you lack rights to create them; and no <repo>.issues folder next to the user's checkout) while delivering every artifact to GitHub. The spec and plan are posted as tagged issue comments; the build's first artifact is the pull request body; QA is a tagged pull request comment. All human interaction is inline in this session. Use when the user says "run the gh pipeline on N", "drive issue N through the pipeline on GitHub", passes a mode (auto/semi-auto/manual), or invokes /run-pipeline-gh with an issue number.
+description: Drives one GitHub issue through spec -> plan -> build -> QA, keeping the state machine in a LOCAL state.json under ~/.claude/dev-crew/<repo>/<issue>/ (a hidden, persistent, Claude-standard location; no GitHub labels, so it works where status:* labels are unavailable or you lack rights to create them; and no <repo>.issues folder next to the user's checkout) while delivering every artifact to GitHub. The spec and plan are posted as tagged issue comments; the build summary, the QA report, and every build/QA rework round all live in the pull request body, which the skill rebuilds from parts each round. All human interaction is inline in this session. Use when the user says "run the gh pipeline on N", "drive issue N through the pipeline on GitHub", passes a mode (auto/semi-auto/manual), or invokes /run-pipeline-gh with an issue number.
 ---
 
 # Issue pipeline (GitHub delivery, local state)
@@ -12,23 +12,27 @@ file-writing subagents for the heavy per-phase reasoning and hand each
 one a concrete scratch path to write its artifact to. The four agents
 write only to the filesystem (`spec.md`, `plan.md`, `build.md`,
 `qa.md`) under `~/.claude/dev-crew/<repo>/<issue>/`; **you** read each
-artifact back and post it to GitHub. The state machine lives in a **local
-`state.json`** in that same folder, moved only through the single
-validated transition script. **No GitHub label is ever read or written**
-(this is the whole point: it works in repos where `status:*` labels are
-unavailable or you cannot create them). Every human question lives
-inline in this session, never in a GitHub comment you poll.
+artifact back and deliver it to GitHub. Spec and plan go to tagged issue
+comments; the build summary, the QA report, and every build/QA rework
+round all live in the **pull request body**, which you own and rebuild
+from its parts each round (see "Assembling the pull request body"). The
+state machine lives in a **local `state.json`** in that same folder,
+moved only through the single validated transition script. **No GitHub
+label is ever read or written** (this is the whole point: it works in
+repos where `status:*` labels are unavailable or you cannot create them).
+Every human question lives inline in this session, never in a GitHub
+comment you poll.
 
 ## Mission
 
 Take the issue from wherever `state.json` says it is to the next resting
 point: run each phase's agent, read its scratch artifact, deliver that
-artifact to GitHub (spec/plan as tagged issue comments, build's first
-pass as the pull request body, QA as a tagged pull request comment),
-advance the status only through the transition script, and surface every
-question inline in a way that survives the session being killed. Where
-you are is always read from `state.json.status`, never from a GitHub
-label and never from what you remember of this conversation.
+artifact to GitHub (spec/plan as tagged issue comments; the build
+summary, the QA report, and every rework round assembled into the pull
+request body), advance the status only through the transition script, and
+surface every question inline in a way that survives the session being
+killed. Where you are is always read from `state.json.status`, never from
+a GitHub label and never from what you remember of this conversation.
 
 ## Setup (run once at the top of every invocation)
 
@@ -57,10 +61,10 @@ label and never from what you remember of this conversation.
    - The issue folder is `<root>/<issue>/`. `state.json` and the agents'
      scratch artifacts live inside it. `mkdir -p` it if it does not exist.
    - The scratch files are only the agents' output channel: **you** read
-     each one back and post it to GitHub, then they are disposable. The
-     public record lives on GitHub (the tagged comments and the pull
-     request); the durable private record of *where the machine is* is
-     `state.json`.
+     each one back and deliver it to GitHub, then they are disposable. The
+     public record lives on GitHub (the tagged spec/plan issue comments
+     and the pull request body); the durable private record of *where the
+     machine is* is `state.json`.
 3. **Bootstrap the issue folder.** If `<root>/<issue>/state.json` does
    not exist, seed it with `{"status": "open", "mode": "<mode>",
    "branch": null, "prNumber": null, "qaVerdict": null,
@@ -115,8 +119,8 @@ transition edges (all applied only through the transition script):
 | --- | --- | --- | --- | --- |
 | spec  | `open` | `dev-crew:spec-writer` | tagged issue comment `<!-- gh-pipeline:spec -->` | `spec-ready` |
 | plan  | `spec-ready` | `dev-crew:planner` | tagged issue comment `<!-- gh-pipeline:plan -->` | `ready-for-dev` |
-| build | `ready-for-dev`, `in-progress`, `blocked` | `dev-crew:builder` | first pass: PR body; later rounds: PR comment | first `in-progress`, then `ai-review` |
-| qa    | `ai-review` | `dev-crew:reviewer` | tagged PR comment `<!-- gh-pipeline:qa -->` | `human-review` (approved) or `in-progress` (rejected) |
+| build | `ready-for-dev`, `in-progress`, `blocked` | `dev-crew:builder` | rebuild the PR body (first round: base content; later rounds: a `## Changes` entry under `# Updates`) | first `in-progress`, then `ai-review` |
+| qa    | `ai-review` | `dev-crew:reviewer` | rebuild the PR body (the QA block; later rounds: a `## QA` entry under `# Updates`) | `human-review` (approved) or `in-progress` (rejected) |
 
 Every issue runs the full spec -> plan -> build -> QA path.
 
@@ -134,7 +138,11 @@ For each phase, in order:
    instruction to adopt its own recommended default on any ambiguity and
    record the decision in the artifact (so it returns `done`, never
    `clarification-needed`). The agent never posts to GitHub; only the
-   builder touches the PR, and only to open/update it.
+   builder touches the PR, and only to open it as a draft placeholder.
+   Tell the builder explicitly that **you own the pull request body**, so
+   it opens the PR with only a minimal `Closes #<issue>` placeholder body
+   and never `gh pr edit`s the body itself (you build the body from
+   `build.md`; see "Assembling the pull request body").
 4. **On a `clarification-needed` return** (only possible in
    `semi-auto`/`manual`): follow "Raising a question" below, then
    re-invoke this same phase agent with the answer folded into its
@@ -145,9 +153,11 @@ For each phase, in order:
 5. **On a `done` return**: read the artifact back from the scratch path
    to confirm it exists and is non-empty (never trust the agent's
    summary that it wrote the file), then **deliver it to GitHub** for
-   this phase (see "Delivering an artifact to GitHub"). For QA, parse
-   the trailing `QA-VERDICT:` line from `qa.md` itself and record it in
-   `state.json.qaVerdict`.
+   this phase (see "Delivering an artifact to GitHub"). For QA, parse the
+   trailing line matching `QA-VERDICT:` from `qa.md` itself (it is an HTML
+   comment, `<!-- QA-VERDICT: approved -->` / `<!-- QA-VERDICT: rejected
+   -->`; grep the last such line and read the verdict word) and record it
+   in `state.json.qaVerdict`.
 6. **Artifact-approval gate** (see the modes section): in `manual` mode,
    stop for an approve/revise decision before advancing; in
    `auto`/`semi-auto`, advance immediately.
@@ -185,24 +195,31 @@ For each phase, in order:
   - **Hand the builder the worktree path.** When you invoke the build
     agent, pass the absolute worktree path
     (`<parent>/<repo>.worktrees/<branch>/`) as the worktree it must `cd`
-    into and work in, alongside the artifact paths. The builder does not
-    create its own branch or worktree; it works where you put it and opens
-    the PR from that branch. This same worktree is reused for every QA
-    rework round.
+    into and work in, alongside the artifact paths. Tell it **you own the
+    pull request body**, so it opens the PR with only a minimal `Closes
+    #<issue>` placeholder body and never edits the body. The builder does
+    not create its own branch or worktree; it works where you put it and
+    opens the PR from that branch. This same worktree is reused for every
+    QA rework round.
 - The entry transition is its own step: from `ready-for-dev` or
   `blocked`, first transition to `in-progress` (the script has no
   `ready-for-dev -> ai-review` edge); if already at `in-progress`, skip
   that (there is no `in-progress -> in-progress` edge). The agent runs,
-  opens/updates the PR with a clean `Closes #<issue>` body of its own,
-  and writes `build.md`. Then **you** deliver: on the first build pass,
-  overlay `build.md` as the PR body via `gh pr edit <pr> --body-file
-  <file>` (the fuller "what this PR does"), prepending a `Closes #<issue>`
-  line so the overlay does not strip the issue link the builder's original
-  body carried (see "Delivering an artifact to GitHub"); on every later
-  round (a QA-rejection fixup or a manual build-gate revise) reply with
-  `build.md` as an ordinary PR comment via `gh pr comment <pr>
-  --body-file <file>` instead of re-editing the body. Finally transition
-  `in-progress -> ai-review`.
+  opens the PR (first round) with a minimal `Closes #<issue>` placeholder
+  body, and writes `build.md`. Then **you** deliver by **rebuilding the
+  whole PR body** from its parts (see "Assembling the pull request body"):
+  - **First build round.** Snapshot `build.md` as this issue's base PR
+    content (copy it to `<root>/<issue>/pr-content.md`), then assemble and
+    write the body. At this point the body is just `Closes #<issue>` plus
+    the base content; there is no QA block or `# Updates` section yet.
+  - **Later rounds** (a QA-rejection fixup or a manual build-gate revise).
+    Append this round to the issue's ordered round log: archive the fresh
+    `build.md` as the next `## Changes` entry (see "Assembling the pull
+    request body" for the round-log mechanism), then reassemble and
+    rewrite the whole body. Never post a PR comment and never leave a
+    stale body: the body is always the single rebuilt document.
+
+  Finally transition `in-progress -> ai-review`.
 - Record the PR number: after the build agent returns, re-derive the
   linked PR (see Finding the linked PR) and write it to
   `state.json.prNumber` as a cache. Never trust a stored `prNumber` over
@@ -211,16 +228,27 @@ For each phase, in order:
 ### QA phase specifics
 
 - Read the verdict from the last `QA-VERDICT:` line of `qa.md`, not from
-  the agent's return, and record it in `state.json.qaVerdict`. Post
-  `qa.md` as a tagged PR comment (`<!-- gh-pipeline:qa -->`).
+  the agent's return, and record it in `state.json.qaVerdict`. Then
+  **deliver by rebuilding the PR body** (see "Assembling the pull request
+  body"): the reviewer already shaped `qa.md` as the `# QA: Approved` /
+  `# QA: Rejected` block (verdict header, short summary, `<details>` full
+  report, trailing `<!-- QA-VERDICT: ... -->`), so you place it verbatim.
+  - **First QA** (the QA of the first build round, before any rejection):
+    this block is the top-level QA block that sits directly under the base
+    PR content. Record it as the current QA block and reassemble the body.
+  - **Re-review** (the QA after a rejection fixup): archive this block as
+    the next `## QA` entry in the round log (pairing the `## Changes` entry
+    from the build round it reviewed), then reassemble the body.
 - In `auto`/`semi-auto`: on `rejected`, route `qa.md` plus the rejection
   back to the **build** agent as fixup feedback, transition `ai-review
-  -> in-progress`, re-run build, post the fresh `build.md` as a PR
-  comment, transition back to `ai-review`, and re-run QA (posting a new
-  tagged PR comment). Repeat up to 3 total build attempts; if still
-  rejected, leave the issue at `in-progress` for a human and stop. On
-  `approved`, transition `ai-review -> human-review`.
-- In `manual`: after posting `qa.md`, hit the QA approval gate (below).
+  -> in-progress`, re-run build (which archives a `## Changes` round entry
+  and rebuilds the body), transition back to `ai-review`, and re-run QA
+  (which archives the matching `## QA` round entry and rebuilds the body).
+  Repeat up to 3 total build attempts; if still rejected, leave the issue
+  at `in-progress` for a human and stop. On `approved`, transition
+  `ai-review -> human-review`.
+- In `manual`: after rebuilding the body with the QA block, hit the QA
+  approval gate (below).
 - **Flip the PR out of draft on the way into `human-review`.** The
   builder opens the PR as a draft and it stays draft through every rework
   round; the moment the issue reaches `human-review` (QA approved), the
@@ -230,8 +258,9 @@ For each phase, in order:
   (the direct `ai-review -> human-review` in auto/semi-auto, and the
   `qa-awaiting-approval -> human-review` approve branch in manual). It is
   idempotent, an already-ready PR is fine; a failure here is a soft
-  warning, not a pipeline failure. This is a PR-state change, not a
-  comment, so it is exempt from the "no bookkeeping PR comment" rule.
+  warning, not a pipeline failure. This is a PR-state change (`gh pr
+  ready`), not a body rewrite or a comment, so it stands apart from the
+  body-assembly flow.
 
 ## The single validated status mutator
 
@@ -267,42 +296,118 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/pipeline-transition.sh" <root> <issue> <to-s
 ## Delivering an artifact to GitHub
 
 Once a phase agent returns `done` and you have confirmed the scratch
-artifact is present and non-empty, post it. Always post via `--body-file`
-(write the full body to a temp file and pass that file), never an inlined
-`--body`: it keeps the (possibly large) artifact off the shell command
-line and avoids any quoting corruption of multi-line markdown. Build the
-temp body by writing a small header prefix (the phase tag line, and the
-notify @-mention) and then appending the scratch artifact verbatim:
+artifact is present and non-empty, deliver it. Always deliver via
+`--body-file` (write the full body to a temp file and pass that file),
+never an inlined `--body`: it keeps the (possibly large) artifact off the
+shell command line and avoids any quoting corruption of multi-line
+markdown. The two spec/plan phases post issue comments; the build and QA
+phases both write the **pull request body**, which you rebuild from parts.
 
-- **spec / plan** -> a **tagged issue comment**. Prefix the body with
-  the phase tag (`<!-- gh-pipeline:spec -->` or
-  `<!-- gh-pipeline:plan -->`) and the mention, then the artifact. Post
-  with `gh issue comment <issue> --body-file <file>`. On a revise round
-  (see modes), edit the existing tagged comment in place instead: find
-  the last comment carrying that phase's tag and `PATCH` its body, adding
-  a short "What changed" note at the top.
-- **build, first pass** -> the **PR body**. `gh pr edit <pr>
-  --body-file <file>` with `build.md` as the body. The builder opened the
-  PR with a clean `Closes #<issue>` body, but `build.md` is a separate,
-  fuller document that carries no `Closes` line, so overlaying it verbatim
-  would strip the issue link and break the `closedByPullRequestsReferences`
-  lookup this skill relies on (see "Finding the linked PR"). **Prepend a
-  `Closes #<issue>` line** (for a local `L`-id, the local-id reference
-  instead, which has no `Closes`) to the temp body before `build.md`, so
-  the overlay preserves the link. Skip this for a local issue, which has
-  no `Closes` link to preserve.
-- **build, later rounds** -> a **PR comment**. `gh pr comment <pr>
-  --body-file <file>` with the fresh `build.md`.
-- **QA** -> a **tagged PR comment** (`<!-- gh-pipeline:qa -->`). `gh pr
-  comment <pr> --body-file <file>` with `qa.md`.
+- **spec / plan** -> a **tagged issue comment**. Build the temp body by
+  writing a small header prefix (the phase tag, and the notify @-mention)
+  and then appending the scratch artifact verbatim. Prefix with the phase
+  tag (`<!-- gh-pipeline:spec -->` or `<!-- gh-pipeline:plan -->`) and the
+  mention, then the artifact. Post with `gh issue comment <issue>
+  --body-file <file>`. On a revise round (see modes), edit the existing
+  tagged comment in place instead: find the last comment carrying that
+  phase's tag and `PATCH` its body, adding a short "What changed" note at
+  the top.
+- **build / QA** -> the **pull request body**. You never post a PR
+  comment; every build summary and QA report lives in the body. Rebuild
+  the whole body from its parts and write it with `gh pr edit <pr>
+  --body-file <file>` (see "Assembling the pull request body").
 
 The notify @-mention is a single configurable GitHub username pinged when
 an artifact is posted or revised (GitHub auto-notifies the author, but an
-explicit mention is the reliable trigger). Fold it into the header
-prefix; leave it out if none is configured.
+explicit mention is the reliable trigger). Fold it into the spec/plan
+comment header prefix; leave it out if none is configured. (The PR body
+has no @-mention line: the builder's `gh pr create` already notifies the
+author, and later body rewrites should not re-ping on every round.)
 
 Delivering to GitHub is a plain comment/PR-body write. It is **not** a
 label write: nothing here reads or edits any `status:*` (or other) label.
+
+## Assembling the pull request body
+
+The pull request body is a single document you own and rewrite in full on
+every build and QA delivery. Never post a PR comment and never edit it by
+hand-splicing text into the live body: always reassemble it from the
+issue's saved parts and overwrite it with `gh pr edit <pr> --body-file
+<file>`. Rewriting the whole body each time makes the result deterministic
+and resume-safe: the same parts always produce the same body, so a
+re-run, a retried round, or a resumed session cannot duplicate or
+half-write a section.
+
+### The saved parts (all under `<root>/<issue>/`)
+
+- `pr-content.md` -> the base PR content: a snapshot of the first build
+  round's `build.md`, taken once when the PR is first opened. This is the
+  "what this PR does" top section and does not change on later rounds.
+- `qa.md` -> the current QA block (the reviewer's latest report, already
+  shaped as the `# QA:` header + summary + `<details>` + trailing
+  `<!-- QA-VERDICT: ... -->`). Overwritten by each QA run; the body always
+  shows the latest verdict up top.
+- The **round log**, an ordered set of per-round entries for the
+  `# Updates` section. Store each round as a pair of numbered files:
+  `round-<n>-changes.md` (a build round's `build.md`, archived when that
+  rework round runs) and `round-<n>-qa.md` (the matching re-review's
+  `qa.md`, archived when that re-review runs). `<n>` starts at 1 for the
+  first rework round (the first QA rejection's fixup). Round 0 is the
+  initial build + first QA and lives in the top sections, not the log.
+  Archive by copying the fresh scratch file to its numbered name at the
+  moment that round's phase delivers, then reassemble; the numbered files
+  are the durable per-round record (the scratch `build.md`/`qa.md` get
+  overwritten each round, so the archive is what survives).
+
+### The layout
+
+Assemble the body in this fixed order, then write it via `gh pr edit`:
+
+```
+Closes #<issue>
+
+<contents of pr-content.md>
+
+<contents of qa.md — the current QA block: "# QA: Approved/Rejected",
+ the short summary, the <details> full report, and the trailing
+ <!-- QA-VERDICT: ... --> comment>
+
+# Updates
+
+## Changes
+<contents of round-1-changes.md>
+
+## QA
+<contents of round-1-qa.md>
+
+## Changes
+<contents of round-2-changes.md>
+
+## QA
+<contents of round-2-qa.md>
+
+...one ## Changes / ## QA pair per round, in order...
+```
+
+Rules for the layout:
+
+- **`Closes #<issue>` always leads the body** (for a local `L`-id, the
+  local-id reference line instead, which has no `Closes`), so the overlay
+  never strips the issue link the `closedByPullRequestsReferences` lookup
+  relies on (see "Finding the linked PR"). Skip the `Closes` line for a
+  local issue, which has no link to preserve.
+- **The QA block only appears once QA has run.** On the very first build
+  delivery (before any QA), there is no `qa.md` yet, so the body is just
+  `Closes` + `pr-content.md`.
+- **The `# Updates` section only appears once at least one rework round
+  exists** (i.e. there is a `round-1-*` entry). Before the first QA
+  rejection there are no rework rounds, so omit `# Updates` entirely.
+- **A round's `## QA` may lag its `## Changes` by one delivery.** A build
+  rework round archives `round-<n>-changes.md` and rebuilds the body
+  before its re-review has run; at that instant `round-<n>-qa.md` does not
+  exist yet, so render the `## Changes` entry with no `## QA` under it.
+  The next QA delivery archives `round-<n>-qa.md` and rebuilds again,
+  filling it in.
 
 ## Rendering a clarification block
 
@@ -384,17 +489,19 @@ Evaluate these two decisions separately for every phase.
 - **Artifact-approval axis** (do you stop after a delivered artifact?):
   - `auto` / `semi-auto`: auto-approve every artifact; advance
     immediately after posting it.
-  - `manual`: after each phase's artifact is posted, use
+  - `manual`: after each phase's artifact is delivered, use
     `AskUserQuestion` to approve or revise. `approve` advances via the
     transition script (into that phase's `*-awaiting-approval` gate then
     out to the real next status, matching the gate edges in the script's
     table). `revise` re-runs that phase's agent with the feedback,
-    re-writes the artifact, re-delivers it to GitHub (spec/plan: edit the
-    existing tagged comment in place with a "What changed" note; build: a
-    new PR comment), and asks again. The QA-gate `revise` routes the
-    feedback plus the current `qa.md` to the **build** agent (not QA),
-    posts the fresh `build.md` as a PR comment, re-runs QA, re-posts a
-    tagged QA comment, and stays at the QA gate.
+    re-writes the artifact, and re-delivers it to GitHub (spec/plan: edit
+    the existing tagged comment in place with a "What changed" note;
+    build: treat the revise as a rework round, archiving a `## Changes`
+    round entry and rebuilding the PR body), then asks again. The QA-gate
+    `revise` routes the feedback plus the current `qa.md` to the **build**
+    agent (not QA), which archives a `## Changes` round entry and rebuilds
+    the body, then re-runs QA (archiving the matching `## QA` round entry
+    and rebuilding the body again), and stays at the QA gate.
 
 The axes are genuinely orthogonal: a spec with no question in
 `semi-auto` still auto-approves; the same spec in `manual` still stops
@@ -466,13 +573,21 @@ pipeline stops at `human-review`; it never merges.
   `pendingQuestion` every run, and re-derive the linked PR every time you
   need it.
 - Letting a phase agent post to GitHub. The agents are file-only (the
-  builder alone touches the PR, to open/update it); reading the scratch
-  artifact back and posting it is your job.
+  builder alone touches the PR, and only to open it as a draft with a
+  minimal `Closes #<issue>` placeholder body); reading the scratch
+  artifact back and delivering it is your job.
 - Posting via an inlined `--body` (shell-quoting corrupts multi-line
   markdown) instead of `--body-file`. Always build the body on disk and
   post the file.
-- Overwriting the PR body on a later build round. Only the first build
-  pass sets the body; later rounds reply as a PR comment.
+- Posting a PR comment for the build summary, the QA report, or a rework
+  round. There are no PR comments in this pipeline: the build summary, the
+  QA report, and every rework round all live in the PR body, which you
+  rebuild from parts and overwrite with `gh pr edit --body-file`.
+- Hand-splicing new text into the live PR body, or letting stale rounds
+  survive because you only appended. Always reassemble the whole body from
+  the saved parts (`pr-content.md`, `qa.md`, the `round-<n>-*` log) and
+  overwrite it, so the result is deterministic and cannot duplicate a
+  section on a retry or resume.
 - Trusting an agent's "I wrote the file" over reading the file back;
   trusting the agent's summary of a QA verdict over the `QA-VERDICT:`
   line in `qa.md`.
@@ -487,12 +602,14 @@ pipeline stops at `human-review`; it never merges.
 
 The issue has advanced to its next resting point: each phase run's
 artifact delivered to its GitHub target (spec/plan as tagged issue
-comments, build's first pass as the PR body and later rounds as PR
-comments, QA as a tagged PR comment), the state moved only through the
-transition script (a local `state.json.status`, never a label), any open
-question persisted in `state.json.pendingQuestion` (and, if it could not
-be answered, also rendered as a `[NEEDS CLARIFICATION]` block in the
-posted spec/plan comment) with nothing else recording it, and the agents
-having written only their scratch artifacts. No GitHub label was read or
-written at any point. A re-run reads `state.json` and resumes exactly
-where this one stopped.
+comments; the build summary, the QA report, and every rework round
+assembled into the PR body, which was rebuilt from its saved parts and
+overwritten via `gh pr edit --body-file`, never a PR comment), the state
+moved only through the transition script (a local `state.json.status`,
+never a label), any open question persisted in
+`state.json.pendingQuestion` (and, if it could not be answered, also
+rendered as a `[NEEDS CLARIFICATION]` block in the posted spec/plan
+comment) with nothing else recording it, and the agents having written
+only their scratch artifacts. No GitHub label was read or written at any
+point. A re-run reads `state.json` and resumes exactly where this one
+stopped.

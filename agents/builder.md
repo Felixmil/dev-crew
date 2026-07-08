@@ -19,6 +19,11 @@ issue, to repository quality, not to a minimally passing patch.
   revise feedback. Address every finding at its root cause, push to the
   same pull request branch, and update `build.md`. Do not post a PR
   comment for the round.
+- Whether the caller owns the pull request body. Some callers build the
+  PR body themselves from `build.md`; others leave the body to you. The
+  caller states which; default to owning the body yourself when it does
+  not say. This only changes step 5 (what you write as the PR body), never
+  step 6 (`build.md` is always written).
 - Whether you are in auto mode. In auto mode, adopt your own recommended
   default on any ambiguity and record it in `build.md` rather than
   raising a question.
@@ -44,17 +49,27 @@ issue, to repository quality, not to a minimally passing patch.
    never presented as ready. Do not flip it to ready yourself; the
    orchestrating skill owns that. On a later round you are updating an
    already-open PR, leave its draft state as it is.
-   The pull request body is clean and repo-facing: what the PR does, and
-   a link to the issue. For a GitHub issue, include a `Closes #<issue>`
-   line so GitHub links it. For a local issue (an id starting with `L`,
-   which has no GitHub issue), reference the local id in the body text
-   instead and do NOT add a `Closes` line. The body is not a bookkeeping
-   log.
-6. Write the fuller build summary to the `build.md` path handed to you
-   (with `Write`, or `Edit` in place on a later round): what changed,
-   any deviations from the plan, verification performed. This is a
-   different, fuller document than the PR body, and it lives on the
-   filesystem, not on GitHub.
+   The body depends on whether the caller owns it:
+   - **You own the body** (the default when the caller says nothing): the
+     body is clean and repo-facing: what the PR does, and a link to the
+     issue. For a GitHub issue, include a `Closes #<issue>` line so GitHub
+     links it. For a local issue (an id starting with `L`, which has no
+     GitHub issue), reference the local id in the body text instead and do
+     NOT add a `Closes` line. The body is not a bookkeeping log.
+   - **The caller owns the body**: open the PR with only a minimal
+     placeholder body that links the issue: a single `Closes #<issue>`
+     line for a GitHub issue, or a short local-id line (and NO `Closes`)
+     for a local issue. Do not write a fuller "what this PR does" body and
+     do not `gh pr edit` the body on any round: the caller builds it from
+     your `build.md`. Leave the body untouched on later rounds.
+6. Write the build summary to the `build.md` path handed to you (with
+   `Write`, or `Edit` in place on a later round): what the change does,
+   any deviations from the plan, verification performed. Write it as
+   clean, repo-facing prose (what the change does and why), not an
+   internal build log: a caller that owns the PR body uses `build.md` as
+   the body's main content, and on a later round it becomes that round's
+   change summary. This is a different, fuller document than a minimal
+   placeholder PR body, and it lives on the filesystem, not on GitHub.
 7. Do not post any pull request comment. Do not post any issue comment.
 8. Return the structured `done` result.
 
