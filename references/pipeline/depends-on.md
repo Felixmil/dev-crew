@@ -1,0 +1,7 @@
+# dependsOn: read-only, one-directional access
+
+Shared by every pipeline skill. The one delta each skill states for itself is **which upstream artifacts it resolves** (a feature dependency has `spec.md`; a bug dependency has `investigation.md`; both have `plan.md`) and **whether an archive fallback applies** (the file-based root has an `archive/`; a hidden gh-pipeline root does not).
+
+- Before invoking the phase agents for issue N, read `state.json.dependsOn` (default `[]`). For each depended-on issue D, resolve its upstream artifacts under `<root>/D/`; if the skill has an archive and D is not in the active set, fall back to `<root>/archive/D/...` (a merged dependency is moved there by `/merge-pr`, and its artifacts stay valid read-only context).
+- If those exist, pass them as **read-only** paths in the agent prompt. If `dependsOn` is empty, pass no other-issue path at all. Never hand issue N's agent the path where a non-dependency issue could be written; one-directionality is structural, not a rule the agent must remember.
+- If a depended-on `D`'s folder or artifacts **do not exist** when they'd be read: do not silently proceed and do not hard-block. Raise a question (via "Raising a question", `phase: "dependency"`) with options "Proceed without the missing dependency" (recommended default, so a bare run still moves) and "Wait". If the human picks "Wait", stop cleanly with `pendingQuestion` cleared and `status` unchanged, so a later re-run retries the dependency.

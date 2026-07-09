@@ -23,11 +23,21 @@ skills/
   update-branch/                   /update-branch [branch]: merge the target in, ask only about semantic conflicts
   address-pr/                      /address-pr N: fix a PR's CI failures and address its valid review comments
   merge-pr/                        /merge-pr N: squash-merge a PR after gating CI, mergeability, and rule bypass
+references/
+  pipeline/                        machinery the three pipelines share, one file per concern (single source of truth)
+    state-and-setup.md             argument parse, folder bootstrap, mode reconcile, job rename, the status mutator
+    raising-questions.md           the resumable question-and-resume protocol
+    modes.md                       the two orthogonal mode axes (questions, artifact-approval)
+    build-phase.md                 dedicated branch, isolated worktree, PR-number caching
+    depends-on.md                  read-only, one-directional dependency access
+    finding-pr.md                  re-deriving the linked PR fresh
 scripts/
   pipeline-transition.sh           the only thing allowed to write state.json.status, used by all three pipelines
   pipeline-rename-job.sh           renames the background job to "#N <slug>" so parallel pipeline runs are legible
 drafts/                            inactive; outside the plugin's discovered directories (see drafts/README.md)
 ```
+
+The three pipeline skills share their common machinery through `references/pipeline/`: each `SKILL.md` carries only what is specific to that pipeline (where state lives, how artifacts are delivered, and any phase deltas) and points at the reference files for the rest, so a rule like the resumable-question protocol lives in exactly one place. Skills address these files (and the scripts) by the plugin-root path variable, `${CLAUDE_PLUGIN_ROOT}/references/pipeline/<file>.md`, so they resolve wherever the plugin is installed.
 
 The crew is five job-title agents (spec-writer, investigator, planner, builder, reviewer) plus the standalone conflict-resolver. Each agent is lean and file-based: it writes its artifact to a path it is handed and returns a structured result, and it never posts to GitHub. The calling skill decides where the artifact goes, where state lives, and whether the first phase writes a spec or an investigation, which is what distinguishes the three pipelines:
 
